@@ -1,0 +1,9 @@
+---
+planetary-ephemeris:
+  bsp: de421.bsp
+  tls: latest_leapseconds.tls
+
+gravity:
+  model: EIGEN-GRGS.RL04.MEAN-FIELD.gfc
+  degree: 180
+  order: 180

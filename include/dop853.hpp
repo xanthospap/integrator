@@ -1,12 +1,11 @@
 #ifndef __DSO_ORBIT_INTEGRATION_DOP853_HPP__
 #define __DSO_ORBIT_INTEGRATION_DOP853_HPP__
 
+#include "integration_parameters.hpp"
 #include "eigen3/Eigen/Eigen"
 #include <cstdint>
 
 namespace dso {
-
-struct IntegrationParameters {};
 
 // Function prototype for first order differential equations
 // i.e. y' = f(t,y)

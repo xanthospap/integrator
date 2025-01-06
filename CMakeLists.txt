@@ -7,6 +7,19 @@ project(
   LANGUAGES CXX
 )
 
+# Ensure required libraries are available
+find_package(datetime REQUIRED)
+find_package(iers REQUIRED)
+
+# Pass the library dependencies to subdirectories
+set(PROJECT_DEPENDENCIES iers datetime)
+
+# Define an option for building binaries (defaults to ON)
+option(BUILD_PROGS "Enable building of binaries" ON)
+if(BUILD_PROGS)
+  find_package(sp3 REQUIRED)
+endif()
+
 # compiler flags
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED On)
@@ -45,6 +58,10 @@ PRIVATE
 
 # library source code
 add_subdirectory(src)
+
+if(BUILD_PROGS)
+  add_subdirectory(bin)
+endif()
 
 # install library
 install(TARGETS integrator
