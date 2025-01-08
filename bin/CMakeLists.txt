@@ -18,7 +18,9 @@ foreach(SOURCE_FILE IN LISTS BIN_SOURCES)
   # Link the executable to the required libraries
   target_link_libraries(${EXECUTABLE_NAME} PRIVATE 
     integrator 
+    yaml-cpp
     dso::sp3
     ${PROJECT_DEPENDENCIES}
+    ${CSPICE_LIB}
   )
 endforeach()

@@ -87,7 +87,7 @@ constexpr const double er12 = -0.2235530786388629525884427845e-01;
 } /* namespace */
 
 int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
-                        Eigen::VectorXd &y) noexcept {
+                        Eigen::Ref<Eigen::VectorXd> &y) noexcept {
   /* Initial factor for step size adjustment */
   const double expo1 = 1e0 / 8e0 - beta * 0.2;
   const double facc1 = 1e0 / fac1;
@@ -127,6 +127,7 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
       return 1;
     }
   }
+  printf("[INTEGRATOR] Initial step size = %.9f [sec]\n", h);
 
   /* increment function evaluation counter */
   nfcn += 2;
@@ -245,6 +246,8 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
     /* new step size */
     double hnew = h / fac;
 
+    printf("[INTEGRATOR] Step #%d; error=%.3e\n", nstep, err);
+
     if (err <= 1e0) {
       /* Step is accepted */
       facold = std::max(err, 1e-4);
@@ -292,6 +295,8 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
       /* step accepted: update the state vector */
       y = wp.col(4);
 
+      printf("[INTEGRATOR] Step was accepted, new t = %.9f\n", t);
+
     } else {
       /* Step rejected */
       nrejct += 1;
@@ -302,6 +307,7 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
      * the same starting t, with a new step size (h).
      */
     h = hnew;
+    printf("[INTEGRATOR] New step size = %.9f [sec]\n", hnew);
 
   } /* main loop (while) */
 

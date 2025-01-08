@@ -2,8 +2,8 @@
 #include <cmath>
 
 int dso::Dop853::hinit853(double t, double hmax, double posneg,
-                          double &h, const Eigen::VectorXd &y,
-                          const Eigen::VectorXd &f0) noexcept {
+                          double &h, const Eigen::Ref<const Eigen::VectorXd> &y,
+                          const Eigen::Ref<const Eigen::VectorXd> &f0) noexcept {
   /* first guess for initial step */
   Eigen::ArrayXd sk = atol.array() + rtol.array() * y.array().abs();
   const double dnf = ((f0.array() / sk).square()).sum();

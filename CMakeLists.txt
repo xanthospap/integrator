@@ -18,6 +18,8 @@ set(PROJECT_DEPENDENCIES iers datetime)
 option(BUILD_PROGS "Enable building of binaries" ON)
 if(BUILD_PROGS)
   find_package(sp3 REQUIRED)
+  find_package(yaml-cpp REQUIRED)
+  find_library(CSPICE_LIB cspice REQUIRED)
 endif()
 
 # compiler flags

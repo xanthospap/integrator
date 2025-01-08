@@ -7,6 +7,7 @@
 #include "iers/ocean_tide.hpp"
 #include "iers/pole_tide.hpp"
 #include "iers/solid_earth_tide.hpp"
+#include "iers/planets.hpp"
 
 namespace dso {
 
@@ -14,19 +15,22 @@ class IntegrationParameters {
   static constexpr const int PI_MAX_DEGREE = 200;
   static constexpr const int PI_MAX_ORDER  = 200;
 
-private:
+// private:
+public:
   /* TAI epoch */
-  MjdEpoch tai0;
+  MjdEpoch mtai0;
+  /* EOPs */
+  EopSeries *meops;
   /* Earth's gravity field */
-  StokesCoeffs stokes;
+  StokesCoeffs *mgrav;
   /* tidal phenomena ... */
-  SolidEarthTide  *se_tide{nullptr};
-  OceanTide       *oc_tide{nullptr};
-  PoleTide        *ep_tide{nullptr};
-  OceanPoleTide   *op_tide{nullptr};
-  AtmosphericTide *at_tide{nullptr};
+  SolidEarthTide  *mse_tide{nullptr};
+  OceanTide       *moc_tide{nullptr};
+  PoleTide        *mep_tide{nullptr};
+  OceanPoleTide   *mop_tide{nullptr};
+  AtmosphericTide *mat_tide{nullptr};
   /* dealiasing */
-  Aod1bDataStream<AOD1BCoefficientType::GLO> *dealias{nullptr};
+  Aod1bDataStream<AOD1BCoefficientType::GLO> *mdealias{nullptr};
 
   /* third body gravity 
    *                       | Bit Nr. | Default state
@@ -48,12 +52,21 @@ private:
   uint8_t tbg = 0x03;
 
   /* allocate scratch space for computations */
-  CoeffMatrix2D<MatrixStorageType::LwTriangularColWise> W{PI_MAX_DEGREE + 3,
+  CoeffMatrix2D<MatrixStorageType::LwTriangularColWise> mW{PI_MAX_DEGREE + 3,
                                                           PI_MAX_DEGREE + 3};
-  CoeffMatrix2D<MatrixStorageType::LwTriangularColWise> M{PI_MAX_DEGREE + 3,
+  CoeffMatrix2D<MatrixStorageType::LwTriangularColWise> mM{PI_MAX_DEGREE + 3,
                                                           PI_MAX_DEGREE + 3};
 
 public:
+  EopSeries *eops() noexcept { return meops; }
+  StokesCoeffs *grav() noexcept { return mgrav; }
+  CoeffMatrix2D<MatrixStorageType::LwTriangularColWise> &tw() noexcept {
+    return mW;
+  }
+  CoeffMatrix2D<MatrixStorageType::LwTriangularColWise> &tm() noexcept {
+    return mM;
+  }
+  MjdEpoch t0() const noexcept { return mtai0; }
 }; /* class IntegrationParameters */
 
 } /* namespace dso */

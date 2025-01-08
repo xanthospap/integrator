@@ -10,15 +10,20 @@ namespace dso {
 // Function prototype for first order differential equations
 // i.e. y' = f(t,y)
 // where y' is output-ed in the yp vector
-typedef int (*ODEfun)(double t,                       // Independent variable
-                      const Eigen::Ref<const Eigen::VectorXd>& y,  // State (function values)
-                      const IntegrationParameters *params,
-                      Eigen::Ref<Eigen::VectorXd> yp /* Partials/Derivative */) noexcept;
+typedef int (*ODEfun)(
+    /* t: seconds since params.mtai0 in TAI scale */
+    double t,
+    /* Initial state, i.e. y0; vector of size neqn */
+    Eigen::Ref<const Eigen::VectorXd> y,
+    /* list of parameters to be used for computing derivs */
+    IntegrationParameters *params,
+    /* derivative of y (=df/dt) at time: t + params.mtai0 */
+    Eigen::Ref<Eigen::VectorXd> yp) noexcept;
 
 class Dop853 {
 private:
   ODEfun fcn;
-  const IntegrationParameters *params{nullptr};
+  IntegrationParameters *params{nullptr};
   /* number of equations in the system */
   int neqn;
   /* relative error tollerance */
@@ -99,7 +104,7 @@ private:
    *
    */
    int dp86co(double t, double tend, double hmax, double hinit,
-             Eigen::VectorXd &y) noexcept;
+             Eigen::Ref<Eigen::VectorXd> &y) noexcept;
 
   /** @brief Compute an initial step size for the DOP853 integration method.
    *
@@ -126,11 +131,11 @@ private:
    *       direction of integration (`posneg`).
    */
   int hinit853(double t, double hmax, double posneg,
-                          double &h, const Eigen::VectorXd &y0,
-                          const Eigen::VectorXd &f0) noexcept;
+                          double &h, const Eigen::Ref<const Eigen::VectorXd> &y0,
+                          const Eigen::Ref<const Eigen::VectorXd> &f0) noexcept;
 
 public:
-  Dop853(ODEfun f, int neq, const IntegrationParameters *p, double rt,
+  Dop853(ODEfun f, int neq, IntegrationParameters *p, double rt,
          double at) noexcept
       : fcn{f}, params(p), neqn(neq) {
     rtol = Eigen::VectorXd::Constant(neqn, rt);
@@ -148,6 +153,19 @@ public:
    *     steps where taken, clear of stiffness.
    */
   void set_stiffness_check(int s) noexcept { stifflag = s; }
+
+  int integrate(const MjdEpoch &t0_tai, double sec_forward,
+                Eigen::Ref<const Eigen::VectorXd> y0,
+                Eigen::Ref<Eigen::VectorXd> y,
+                double hmax = std::numeric_limits<double>::min(),
+                double hinit = std::numeric_limits<double>::min()) noexcept {
+    params->mtai0 = t0_tai;
+    hmax =
+        (hmax == std::numeric_limits<double>::min()) ? sec_forward / 3. : hmax;
+    hinit = (hinit == std::numeric_limits<double>::min()) ? 0e0 : hinit;
+    y = y0;
+    return dp86co(0, sec_forward, hmax, hinit, y);
+  }
 
 }; /* Dop853 */
 
