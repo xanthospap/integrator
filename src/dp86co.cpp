@@ -106,12 +106,7 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
   unsigned nfcn{0};
 
   /* evaluate the function at the initial point */
-  if (fcn(t, y, params, wp.col(0))) {
-    fprintf(stderr,
-            "[ERROR] Failed computing derivatives at t=%.9f (traceback: %s)\n",
-            t, __func__);
-    return 1;
-  }
+  wp.col(0) = y;
 
   /* if initial step is zero, compute a valid value. note: hinit853 will
    * overwrite wp.col(1) and wp.col(2)
@@ -126,17 +121,15 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
               __func__);
       return 1;
     }
+    ++nfcn;
   }
-  printf("[INTEGRATOR] Initial step size = %.9f [sec]\n", h);
-
-  /* increment function evaluation counter */
-  nfcn += 2;
 
   /* basic integration step: keep takin steps (either accepted or rejected),
    * until a) we reached (or nearly reached) tend, b) reached the maximum
    * steps allowed, or c) an error occured, signalled by `error`!=0.
    */
   int last_step = 0;
+  int last_step_rejected = false;
   int error = 0;
   while (((!error) && (nstep++ < max_allowed_steps)) && (!last_step)) {
 
@@ -201,17 +194,23 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
                   a109 * wp.col(8));
     error += fcn(t + c10 * h, y1, params, wp.col(9));
 
-    // Stage 11
+    // Stage 11 (note that we are storing result in col 1)
     y1 = y + h * (a111 * wp.col(0) + a114 * wp.col(3) + a115 * wp.col(4) +
                   a116 * wp.col(5) + a117 * wp.col(6) + a118 * wp.col(7) +
                   a119 * wp.col(8) + a1110 * wp.col(9));
-    error += fcn(t + c11 * h, y1, params, wp.col(10));
+    error += fcn(t + c11 * h, y1, params, wp.col(1));
 
-    // Stage 12
-    y1 = y + h * (a121 * wp.col(0) + a124 * wp.col(3) + a125 * wp.col(4) +
-                  a126 * wp.col(5) + a127 * wp.col(6) + a128 * wp.col(7) +
-                  a129 * wp.col(8) + a1210 * wp.col(9) + a1211 * wp.col(10));
-    error += fcn(t + c16 * h, y1, params, wp.col(11));
+    // Stage 12 (note that we are storing result in col 2)
+    y1 = y + h * (a121 * wp.col(0) + +a1211 * wp.col(1) + a124 * wp.col(3) +
+                  a125 * wp.col(4) + a126 * wp.col(5) + a127 * wp.col(6) +
+                  a128 * wp.col(7) + a129 * wp.col(8) + a1210 * wp.col(9));
+    error += fcn(/*t + c16 * h*/t+h, y1, params, wp.col(2));
+    nfcn += 11;
+
+    wp.col(3) = b1 * wp.col(0) + b11 * wp.col(1) + b12 * wp.col(2) +
+                b6 * wp.col(5) + b7 * wp.col(6) + b8 * wp.col(7) +
+                b9 * wp.col(8) + b10 * wp.col(9);
+    wp.col(4) = y + h * wp.col(3);
 
     /* vector tolerances of size n=neqn */
     Eigen::ArrayXd sk =
@@ -220,7 +219,7 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
 
     /* Compute the first error component */
     Eigen::VectorXd verr =
-        -bhh1 * wp.col(0) - bhh3 * wp.col(2) + wp.col(3) - bhh2 * wp.col(8);
+        wp.col(3) - bhh1 * wp.col(0) - bhh2*wp.col(8) - bhh3 * wp.col(2);
     const double err2 = ((verr.array() / sk).square()).sum();
 
     /* Compute the second error component */
@@ -246,8 +245,6 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
     /* new step size */
     double hnew = h / fac;
 
-    printf("[INTEGRATOR] Step #%d; error=%.3e\n", nstep, err);
-
     if (err <= 1e0) {
       /* Step is accepted */
       facold = std::max(err, 1e-4);
@@ -257,7 +254,7 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
       /* recompute k4 using the updated step */
       error += fcn(t + h, wp.col(4), params, wp.col(3));
       /* increment function call counter */
-      nfcn += 1;
+      ++nfcn;
 
       /* stiffness detection */
       if (test_for_stiffness() && ((naccpt % nstiff() == 0) || (iasti > 0))) {
@@ -292,14 +289,26 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
 
       /* step accepted: update for the next iteration */
       t += h;
+      
       /* step accepted: update the state vector */
+      wp.col(0) = wp.col(3);
       y = wp.col(4);
 
-      printf("[INTEGRATOR] Step was accepted, new t = %.9f\n", t);
+      /* next step size */
+      if (std::abs(hnew) > hmax)
+        hnew = posneg * hmax;
+      if (last_step_rejected)
+        hnew = posneg * std::min(std::abs(hnew), std::abs(h));
+      last_step_rejected = 0;
+      // printf("step accepted, new step size = %.9f\n", hnew);
 
     } else {
       /* Step rejected */
       nrejct += 1;
+      hnew = h / std::min(facc1, fac11/safe);
+      last_step_rejected = 1;
+      last_step = 0;
+      // printf("step rejected, new step size = %.9f\n", hnew);
     }
 
     /* update step size for next iteration. note that if the step was
@@ -307,7 +316,6 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
      * the same starting t, with a new step size (h).
      */
     h = hnew;
-    printf("[INTEGRATOR] New step size = %.9f [sec]\n", hnew);
 
   } /* main loop (while) */
 

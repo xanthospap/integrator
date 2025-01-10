@@ -83,7 +83,7 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
     fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 1;
   }
-  printf("[deriv] At r=(%.3f, %.3f, %.3f) acc=(%.9f, %.9f, %.9f) [m/sec^2]\n", y0(0), y0(1), y0(2), acc(0), acc(1), acc(2));
+  // printf("[deriv] At r=(%.3f, %.3f, %.3f) acc=(%.9f, %.9f, %.9f) [m/sec^2]\n", y0(0), y0(1), y0(2), acc(0), acc(1), acc(2));
 
   y.segment<3>(0) = y0.segment<3>(3);
   return 0;
@@ -164,7 +164,7 @@ int main(int argc, char *argv[]) {
   params.mgrav = &stokes;
 
   /* setup the integrator */
-  dso::Dop853 dop853(deriv, 6, &params, 1e-6, 1e-6);
+  dso::Dop853 dop853(deriv, 6, &params, 1e-4, 1e-6);
   dop853.set_stiffness_check(10);
 
   Eigen::VectorXd state = Eigen::Matrix<double, 6, 1>::Zero();
@@ -191,18 +191,18 @@ int main(int argc, char *argv[]) {
                           dRdt.transpose() * state.segment<3>(0);
         start_t = block.t;
         state = y;
-        printf("Read first state off from sp3 file: %.12f %.6f %.6f %.6f %.9f "
-               "%.9f %.9f\n",
-               block.t.imjd().as_underlying_type() +
-                   block.t.fractional_days().days(),
-               block.state[0] * 1e3, block.state[1] * 1e3, block.state[2] * 1e3,
-               block.state[4] * 1e-1, block.state[5] * 1e-1,
-               block.state[6] * 1e-1);
-        printf("Transformed to inertial           : %.12f %.6f %.6f %.6f %.9f "
-               "%.9f %.9f\n",
-               block.t.imjd().as_underlying_type() +
-                   block.t.fractional_days().days(),
-               state(0), state(1), state(2), state(3), state(4), state(5));
+        //printf("Read first state off from sp3 file: %.12f %.6f %.6f %.6f %.9f "
+        //       "%.9f %.9f\n",
+        //       block.t.imjd().as_underlying_type() +
+        //           block.t.fractional_days().days(),
+        //       block.state[0] * 1e3, block.state[1] * 1e3, block.state[2] * 1e3,
+        //       block.state[4] * 1e-1, block.state[5] * 1e-1,
+        //       block.state[6] * 1e-1);
+        //printf("Transformed to inertial           : %.12f %.6f %.6f %.6f %.9f "
+        //       "%.9f %.9f\n",
+        //       block.t.imjd().as_underlying_type() +
+        //           block.t.fractional_days().days(),
+        //       state(0), state(1), state(2), state(3), state(4), state(5));
       } else {
         dso::FractionalSeconds sec =
             block.t.diff<dso::DateTimeDifferenceType::FractionalSeconds>(

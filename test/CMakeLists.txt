@@ -1,0 +1,15 @@
+# add_compile_options(-Wno-unused-variable)
+add_compile_options(-Wno-unused-but-set-variable)
+add_compile_options(-Wno-unused-variable)
+
+add_executable(test_exponential_growth exponential_growth.cpp)
+target_link_libraries(test_exponential_growth PRIVATE integrator)
+add_test(NAME test_exponential_growth COMMAND test_exponential_growth)
+
+add_executable(test_harmonic_oscilator harmonic_oscilator.cpp)
+target_link_libraries(test_harmonic_oscilator PRIVATE integrator)
+add_test(NAME test_harmonic_oscilator COMMAND test_harmonic_oscilator)
+
+add_executable(test_linear_system_d2 linear_system_d2.cpp)
+target_link_libraries(test_linear_system_d2 PRIVATE integrator)
+add_test(NAME test_linear_system_d2 COMMAND test_linear_system_d2)

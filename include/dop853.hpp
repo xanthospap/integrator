@@ -166,6 +166,17 @@ public:
     y = y0;
     return dp86co(0, sec_forward, hmax, hinit, y);
   }
+  int integrate(double x0, double xend,
+                Eigen::Ref<const Eigen::VectorXd> y0,
+                Eigen::Ref<Eigen::VectorXd> y,
+                double hmax = std::numeric_limits<double>::min(),
+                double hinit = std::numeric_limits<double>::min()) noexcept {
+    hmax =
+        (hmax == std::numeric_limits<double>::min()) ? xend / 2. : hmax;
+    hinit = (hinit == std::numeric_limits<double>::min()) ? 0e0 : hinit;
+    y = y0;
+    return dp86co(x0, xend, hmax, hinit, y);
+  }
 
 }; /* Dop853 */
 

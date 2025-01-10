@@ -22,6 +22,9 @@ if(BUILD_PROGS)
   find_library(CSPICE_LIB cspice REQUIRED)
 endif()
 
+# option for tests
+option(BUILD_TESTS "Enable building of tests" ON)
+
 # compiler flags
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED On)
@@ -63,6 +66,12 @@ add_subdirectory(src)
 
 if(BUILD_PROGS)
   add_subdirectory(bin)
+endif()
+
+if(BUILD_TESTS)
+  include(CTest)
+  add_subdirectory(test)
+  enable_testing()
 endif()
 
 # install library
