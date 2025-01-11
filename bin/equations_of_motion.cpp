@@ -6,6 +6,7 @@
 #include "iers/icgemio.hpp"
 #include "integration_parameters.hpp"
 #include "sp3.hpp"
+#include "geodesy/units.hpp"
 #include "yaml-cpp/yaml.h"
 #include <cstdio>
 
@@ -14,7 +15,8 @@ int gcrf2ecef(const dso::MjdEpoch &tai, dso::EopSeries &eops,
               Eigen::Matrix<double, 3, 3> &dRdt) noexcept {
   double fargs[14];
   dso::EopRecord eopr;
-  const auto tt = tai.tai2tt();
+  // const auto tt = tai.tai2tt();
+  const auto tt = tai.gps2tai().tai2tt();
   double X, Y;
 
   /* compute (X, Y)_{cip} and (14) fundamental arguments */
@@ -29,10 +31,7 @@ int gcrf2ecef(const dso::MjdEpoch &tai, dso::EopSeries &eops,
   /* compute gmst using an approximate value for UT1 (linear interpolation) */
   double dut1_approx;
   eops.approx_dut1(tt, dut1_approx);
-  const double gmst = dso::gmst(tt, tt.tt2ut1(dut1_approx));
-
-  /* compute fundamental arguments at given epoch */
-  // dso::fundarg(tt, fargs);
+  [[maybe_unused]]const double gmst = dso::gmst(tt, tt.tt2ut1(dut1_approx));
 
   /* add libration effect [micro as] */
   {
@@ -55,13 +54,9 @@ int gcrf2ecef(const dso::MjdEpoch &tai, dso::EopSeries &eops,
   }
 
   R = dso::detail::gcrs2itrs(dso::era00(tt.tt2ut1(eopr.dut())),
-                             dso::s06(tt, X, Y), dso::sp00(tt), X, Y, eopr.xp(),
-                             eopr.yp(), eopr.lod(), dRdt);
-  // Eigen::Matrix<double, 3, 3> R = R1.transpose();
-  // Eigen::Matrix<double, 3, 3> dRdt = R1.transpose();
-  // yi.segment<3>(0) = R1 * ye.segment<3>(0);
-  // yi.segment<3>(3) = R1 * ye.segment<3>(3) + dRdt * ye.segment<3>(0);
-
+                             dso::s06(tt, X, Y), dso::sp00(tt), X, Y,
+                             dso::sec2rad(eopr.xp()), dso::sec2rad(eopr.yp()),
+                             eopr.lod(), dRdt);
   return 0;
 }
 
@@ -69,23 +64,39 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
           dso::IntegrationParameters *params,
           Eigen::Ref<Eigen::VectorXd> y) noexcept {
 
+  /* current time in TAI */
   dso::MjdEpoch t = params->t0();
   t.add_seconds(dso::FractionalSeconds(tsec));
 
+  /* Celestial to Terrestrial Matrix */
+  Eigen::Matrix<double, 3, 3> R, dRdt;
+  if (gcrf2ecef(dso::MjdEpoch(t), *(params->eops()), R, dRdt)) {
+    return 8;
+  }
+
+  /* Gravity field stokes coefficients */
   auto stokes = *(params->grav());
 
-  /* compute acceleration for given epoch/position */
+  /* compute acceleration for given epoch/position (ECEF) */
   [[maybe_unused]] Eigen::Matrix<double, 3, 3> g;
-  Eigen::Matrix<double, 3, 1> acc = y.segment<3>(3);
-  if (dso::sh2gradient_cunningham(stokes, y0.segment<3>(0), acc, g,
-                                  stokes.max_degree(), stokes.max_order(), -1,
+  const Eigen::VectorXd r_ecef = R * y0.segment<3>(0);
+  Eigen::Matrix<double, 3, 1> acc;
+  if (dso::sh2gradient_cunningham(stokes, r_ecef, acc, g,
+                                  //stokes.max_degree(), stokes.max_order(), -1,
+                                  80,80,-1,
                                   -1, &(params->tw()), &(params->tm()))) {
     fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 1;
   }
-  // printf("[deriv] At r=(%.3f, %.3f, %.3f) acc=(%.9f, %.9f, %.9f) [m/sec^2]\n", y0(0), y0(1), y0(2), acc(0), acc(1), acc(2));
+  // printf("[deriv] At r=(%.3f, %.3f, %.3f) acc=(%.9f, %.9f, %.9f)
+  // [m/sec^2]\n", y0(0), y0(1), y0(2), acc(0), acc(1), acc(2));
 
+  /* set velocity vector (ICRF) */
   y.segment<3>(0) = y0.segment<3>(3);
+
+  /* ECEF to ICRF note that y = (v, a) and y0 = (r, v) */
+  y.segment<3>(3) = R.transpose() * acc;
+
   return 0;
 }
 
@@ -154,17 +165,13 @@ int main(int argc, char *argv[]) {
     assert(stokes.max_order() == ORDER);
   }
 
-  ///* solid earth tide */
-  // dso::SolidEarthTide se_tide;
-  //
-
   /* setup integration parameters */
   dso::IntegrationParameters params;
   params.meops = &eop;
   params.mgrav = &stokes;
 
   /* setup the integrator */
-  dso::Dop853 dop853(deriv, 6, &params, 1e-4, 1e-6);
+  dso::Dop853 dop853(deriv, 6, &params, 1e-9, 1e-12);
   dop853.set_stiffness_check(10);
 
   Eigen::VectorXd state = Eigen::Matrix<double, 6, 1>::Zero();
@@ -181,55 +188,52 @@ int main(int argc, char *argv[]) {
     }
     bool position_ok = !block.flag.is_set(dso::Sp3Event::bad_abscent_position);
     if (position_ok && (!sp3err)) {
-      gcrf2ecef(dso::MjdEpoch(block.t), eop, R, dRdt);
+      if (gcrf2ecef(dso::MjdEpoch(block.t), eop, R, dRdt)) {
+        return 8;
+      }
       if (!it) {
+        /* first state of satellite in file; transform to celestial and store 
+         * as state and start_t. This is where we start integrating from.
+         */
         state << block.state[0] * 1e3, block.state[1] * 1e3,
             block.state[2] * 1e3, block.state[4] * 1e-1, block.state[5] * 1e-1,
             block.state[6] * 1e-1;
         y.segment<3>(0) = R.transpose() * state.segment<3>(0);
         y.segment<3>(3) = R.transpose() * state.segment<3>(3) +
                           dRdt.transpose() * state.segment<3>(0);
+        printf("PL09 %14.7f %14.7f %14.7f\n", state(0)*1e-3, state(1)*1e-3, state(2)*1e-3);
+        printf("VL09 %14.7f %14.7f %14.7f\n", state(3)*1e+1, state(4)*1e+1, state(5)*1e+1);
         start_t = block.t;
         state = y;
-        //printf("Read first state off from sp3 file: %.12f %.6f %.6f %.6f %.9f "
-        //       "%.9f %.9f\n",
-        //       block.t.imjd().as_underlying_type() +
-        //           block.t.fractional_days().days(),
-        //       block.state[0] * 1e3, block.state[1] * 1e3, block.state[2] * 1e3,
-        //       block.state[4] * 1e-1, block.state[5] * 1e-1,
-        //       block.state[6] * 1e-1);
-        //printf("Transformed to inertial           : %.12f %.6f %.6f %.6f %.9f "
-        //       "%.9f %.9f\n",
-        //       block.t.imjd().as_underlying_type() +
-        //           block.t.fractional_days().days(),
-        //       state(0), state(1), state(2), state(3), state(4), state(5));
+        printf("PL09 %14.7f %14.7f %14.7f\n", state(0)*1e-3, state(1)*1e-3, state(2)*1e-3);
+        printf("VL09 %14.7f %14.7f %14.7f\n", state(3)*1e+1, state(4)*1e+1, state(5)*1e+1);
       } else {
+        /* new entry; seconds since intial epoch */
         dso::FractionalSeconds sec =
             block.t.diff<dso::DateTimeDifferenceType::FractionalSeconds>(
                 start_t);
-        printf("Integrating %.3f sec from %.12f; IC=(%.6f %.6f %.6f %.9f %.9f "
-               "%.9f)\n",
-               sec.seconds(), dso::MjdEpoch(start_t).as_mjd(), state(0),
-               state(1), state(2), state(3), state(4), state(5));
+        /* integrate from initial conditions to this epoch */
         if (dop853.integrate(dso::MjdEpoch(start_t), sec.seconds(), state, y)) {
           fprintf(stderr, "ERROR. Integration failed! sec is %.3f\n",
                   sec.seconds());
           return 1;
         }
+        /* transform integration results to ECEF */
         Eigen::VectorXd yt = y;
         y.segment<3>(0) = R * yt.segment<3>(0);
         y.segment<3>(3) = R * yt.segment<3>(3) + dRdt * yt.segment<3>(0);
         printf("%.12f %.6f %.6f %.6f %.9f %.9f %.9f %.6f %.6f %.6f %.9f %.9f "
                "%.9f\n",
-               block.t.imjd().as_underlying_type() +
-                   block.t.fractional_days().days(),
+               //block.t.imjd().as_underlying_type() +
+               //    block.t.fractional_days().days(),
+               sec.seconds(),
                block.state[0] * 1e3, block.state[1] * 1e3, block.state[2] * 1e3,
                block.state[4] * 1e-1, block.state[5] * 1e-1,
                block.state[6] * 1e-1, y(0), y(1), y(2), y(3), y(4), y(5));
       }
     }
     ++it;
-    if (it >= 100)
+    if (it >= 15)
       break;
   }
 
