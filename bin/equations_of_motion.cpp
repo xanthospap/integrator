@@ -233,7 +233,7 @@ int main(int argc, char *argv[]) {
       }
     }
     ++it;
-    if (it >= 15)
+    if (it >= 360)
       break;
   }
 
