@@ -75,7 +75,8 @@ parser.add_argument(
 
 if __name__ == "__main__":
     args = parser.parse_args()
-    scale = args.scale
+    scale_pos = args.scale_pos
+    scale_vel = args.scale_vel
 
     t = []; lx1=[]; ly1=[]; lz1=[];
     lx2=[]; ly2=[]; lz2=[];
@@ -106,6 +107,7 @@ if __name__ == "__main__":
 
 ## Plot state results (not differences)
     if (args.nodif or args.withdif):
+        print("Plotting state results ...")
         axs[0,0].plot(t, [scale_pos*z for z in lx1])
         axs[0,0].plot(t, [scale_pos*z for z in lx2])
         axs[0,1].plot(t, [scale_vel*z for z in lvx1])
@@ -120,31 +122,40 @@ if __name__ == "__main__":
         axs[2,0].plot(t, [scale_pos*z for z in lz2])
         axs[2,1].plot(t, [scale_vel*z for z in lvz1])
         axs[2,1].plot(t, [scale_vel*z for z in lvz2])
-
-        #plt.xlabel('Sec of Integration')
-        #fig.text(0.0, 0.5, r'$\delta \ddot{r}_x$, $\delta \ddot{r}_y$ and $\delta \ddot{r}_z$ in $[m/sec^2]\times$'+'{:.1e}'.format(1/scale), va='center', rotation='vertical')
         
+        xtextpos = (t[0] + t[1]) / 2
+        def ytextpos(scale, list): return scale * sum(z for z in list[0:5]) / 5
+        
+        axs[0,0].text(xtextpos,ytextpos(scale_pos, lx1),r'$X$ [m]')
+        axs[1,0].text(xtextpos,ytextpos(scale_pos, ly1),r'$Y$ [m]')
+        axs[2,0].text(xtextpos,ytextpos(scale_pos, lz1),r'$Z$ [m]')
+        axs[0,1].text(xtextpos,ytextpos(scale_vel,lvx1),r'$V_{X}$ [m/sec]')
+        axs[1,1].text(xtextpos,ytextpos(scale_vel,lvy1),r'$V_{Y}$ [m/sec]')
+        axs[2,1].text(xtextpos,ytextpos(scale_vel,lvz1),r'$V_{Z}$ [m/sec]')
+
         # group_labels.append("acc. group 1")
         # group_labels.append("acc. group 2")
 
 ## Plot differences per component
     if (args.withdif or (not args.nodif)):
-        axs[0,0].plot(t, [scale*(z[0]-z[1]) for z in zip(lx1,lx2)])
-        axs[1,0].plot(t, [scale*(z[0]-z[1]) for z in zip(ly1,ly2)])
-        axs[2,0].plot(t, [scale*(z[0]-z[1]) for z in zip(lz1,lz2)])
-        axs[0,1].plot(t, [scale*(z[0]-z[1]) for z in zip(lvx1,lvx2)])
-        axs[1,1].plot(t, [scale*(z[0]-z[1]) for z in zip(lvy1,lvy2)])
-        axs[2,1].plot(t, [scale*(z[0]-z[1]) for z in zip(lvz1,lvz2)])
+        print("Plotting state diffs ...")
+        axs[0,0].plot(t, [scale_pos*(z[0]-z[1]) for z in zip(lx1,lx2)])
+        axs[1,0].plot(t, [scale_pos*(z[0]-z[1]) for z in zip(ly1,ly2)])
+        axs[2,0].plot(t, [scale_pos*(z[0]-z[1]) for z in zip(lz1,lz2)])
+        axs[0,1].plot(t, [scale_vel*(z[0]-z[1]) for z in zip(lvx1,lvx2)])
+        axs[1,1].plot(t, [scale_vel*(z[0]-z[1]) for z in zip(lvy1,lvy2)])
+        axs[2,1].plot(t, [scale_vel*(z[0]-z[1]) for z in zip(lvz1,lvz2)])
+
         xtextpos = (t[0] + t[1]) / 2
         def ytextpos(scale, list1, list2):
             return scale*(sum(z for z in [ scale*(x[0]-x[1]) for x in zip(list1[0:5],list2[0:5]) ])) / 5
         
-        axs[0,0].text(xtextpos,ytextpos(scale, lx1, lx2),r'$x_{ref}-x$ [m]')
-        axs[1,0].text(xtextpos,ytextpos(scale, ly1, ly2),r'$y_{ref}-y$ [m]')
-        axs[2,0].text(xtextpos,ytextpos(scale, lz1, lz2),r'$z_{ref}-z$ [m]')
-        axs[0,1].text(xtextpos,ytextpos(scale,lvx1,lvx2),r'$v_{x_{ref}}-v_{x}$ [m/sec]')
-        axs[1,1].text(xtextpos,ytextpos(scale,lvy1,lvy2),r'$v_{y_{ref}}-v_{y}$ [m/sec]')
-        axs[2,1].text(xtextpos,ytextpos(scale,lvz1,lvz2),r'$v_{z_{ref}}-v_{z}$ [m/sec]')
+        axs[0,0].text(xtextpos,ytextpos(scale_pos, lx1, lx2),r'$X_{ref}-X$ [m]')
+        axs[1,0].text(xtextpos,ytextpos(scale_pos, ly1, ly2),r'$Y_{ref}-Y$ [m]')
+        axs[2,0].text(xtextpos,ytextpos(scale_pos, lz1, lz2),r'$Z_{ref}-Z$ [m]')
+        axs[0,1].text(xtextpos,ytextpos(scale_vel,lvx1,lvx2),r'$V_{X_{ref}}-V_{X}$ [m/sec]')
+        axs[1,1].text(xtextpos,ytextpos(scale_vel,lvy1,lvy2),r'$V_{Y_{ref}}-V_{Y}$ [m/sec]')
+        axs[2,1].text(xtextpos,ytextpos(scale_vel,lvz1,lvz2),r'$V_{Z_{ref}}-V_{Z}$ [m/sec]')
         
         #plt.xlabel('Sec of Integration')
         #fig.text(0.0, 0.5, r'$\delta \ddot{r}_x$, $\delta \ddot{r}_y$ and $\delta \ddot{r}_z$ in $[m/sec^2]\times$'+'{:.1e}'.format(1/scale), va='center', rotation='vertical')
@@ -159,8 +170,8 @@ if __name__ == "__main__":
     #axs[1:].xaxis.grid(True, which='minor')
     #axs[2:].xaxis.grid(True, which='minor')
 
-    for ax in axs.flat:
-        ax.set(xlabel='Sec of Integration (since t0) [sec]')
+    axs[2,0].set_xlabel("Sec of Integration (since t0) [sec]")
+    axs[2,1].set_xlabel("Sec of Integration (since t0) [sec]")
 
     plt.show()
 

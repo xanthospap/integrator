@@ -10,6 +10,9 @@
 #include "yaml-cpp/yaml.h"
 #include <cstdio>
 
+constexpr const double GM_Moon = 0.49028010560e13;
+constexpr const double GM_Sun = 1.32712442076e20;
+
 int gcrf2ecef(const dso::MjdEpoch &tai, dso::EopSeries &eops,
               Eigen::Matrix<double, 3, 3> &R,
               Eigen::Matrix<double, 3, 3> &dRdt) noexcept {
@@ -88,14 +91,33 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
     fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 1;
   }
-  // printf("[deriv] At r=(%.3f, %.3f, %.3f) acc=(%.9f, %.9f, %.9f)
-  // [m/sec^2]\n", y0(0), y0(1), y0(2), acc(0), acc(1), acc(2));
+
+  // TODO adding sun worsens results !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  Eigen::Matrix<double, 3, 1> acc_tb;
+  {
+    /* get Sun position in ICRF */
+    Eigen::Matrix<double, 3, 1> rtb_sun;
+    if (dso::planet_pos(dso::Planet::SUN, t.tai2tt(), rtb_sun)) {
+      fprintf(stderr, "ERROR Failed to compute Sun position!\n");
+      return 2;
+    }
+    acc_tb = dso::point_mass_acceleration(y0.segment<3>(0), rtb_sun, GM_Sun, g);
+    /* get Moon position in ICRF */
+    Eigen::Matrix<double, 3, 1> rtb_moon;
+    if (dso::planet_pos(dso::Planet::MOON, t.tai2tt(), rtb_moon)) {
+      fprintf(stderr, "ERROR Failed to compute Moon position!\n");
+      return 2;
+    }
+    acc_tb +=
+        dso::point_mass_acceleration(y0.segment<3>(0), rtb_moon, GM_Moon, g);
+  }
 
   /* set velocity vector (ICRF) */
   y.segment<3>(0) = y0.segment<3>(3);
 
   /* ECEF to ICRF note that y = (v, a) and y0 = (r, v) */
-  y.segment<3>(3) = R.transpose() * acc;
+  y.segment<3>(3) =
+      R.transpose() * acc + acc_tb;
 
   return 0;
 }
@@ -201,12 +223,8 @@ int main(int argc, char *argv[]) {
         y.segment<3>(0) = R.transpose() * state.segment<3>(0);
         y.segment<3>(3) = R.transpose() * state.segment<3>(3) +
                           dRdt.transpose() * state.segment<3>(0);
-        printf("PL09 %14.7f %14.7f %14.7f\n", state(0)*1e-3, state(1)*1e-3, state(2)*1e-3);
-        printf("VL09 %14.7f %14.7f %14.7f\n", state(3)*1e+1, state(4)*1e+1, state(5)*1e+1);
         start_t = block.t;
         state = y;
-        printf("PL09 %14.7f %14.7f %14.7f\n", state(0)*1e-3, state(1)*1e-3, state(2)*1e-3);
-        printf("VL09 %14.7f %14.7f %14.7f\n", state(3)*1e+1, state(4)*1e+1, state(5)*1e+1);
       } else {
         /* new entry; seconds since intial epoch */
         dso::FractionalSeconds sec =
@@ -233,7 +251,7 @@ int main(int argc, char *argv[]) {
       }
     }
     ++it;
-    if (it >= 360)
+    if (it >= 1000)
       break;
   }
 
