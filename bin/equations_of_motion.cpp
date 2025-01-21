@@ -116,9 +116,16 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   }
   acc_moon = dso::point_mass_acceleration(y0.segment<3>(0), rtb_moon, GM_Moon);
 
-  /* Solid Earth Tide */
-  params->mse_tide->stokes_coeffs(t.tai2tt(), t.tai2ut1(eopr.dut()), rtb_moon,
-                                  rtb_sun, fargs);
+  /* Solid Earth Tide (ITRF) */
+  Eigen::Matrix<double, 3, 1> acc_set;
+  params->mse_tide->stokes_coeffs(t.tai2tt(), t.tai2ut1(eopr.dut()),
+                                  R * rtb_moon, R * rtb_sun, fargs);
+  if (dso::sh2gradient_cunningham(params->mse_tide->stokes_coeffs(), r_ecef,
+                                  acc_set, g, -1, -1, -1, -1, &(params->tw()),
+                                  &(params->tm()))) {
+    fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
+    return 1;
+  }
 
   /* set velocity vector (ICRF) */
   y.segment<3>(0) = y0.segment<3>(3);
@@ -126,9 +133,10 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   /* ECEF to ICRF note that y = (v, a) and y0 = (r, v) */
   //y.segment<3>(3) =
   //    R.transpose() * acc + acc_tb;
+  acc_sun << 0e0, 0e0, 0e0;
   y.segment<3>(3) = (acc_moon + acc_sun);
+  y.segment<3>(3) += R.transpose() * acc_set;
   y.segment<3>(3) += R.transpose() * acc;
-
 
   return 0;
 }
@@ -205,10 +213,15 @@ int main(int argc, char *argv[]) {
   dso::IntegrationParameters params;
   params.meops = &eop;
   params.mgrav = &stokes;
+  params.mse_tide = &setide;
 
   /* setup the integrator */
   dso::Dop853 dop853(deriv, 6, &params, 1e-9, 1e-12);
   dop853.set_stiffness_check(10);
+
+  /* dummy */
+  double fargs[14];
+  dso::EopRecord eopr;
 
   Eigen::VectorXd state = Eigen::Matrix<double, 6, 1>::Zero();
   Eigen::VectorXd y = Eigen::Matrix<double, 6, 1>::Zero();
@@ -224,7 +237,7 @@ int main(int argc, char *argv[]) {
     }
     bool position_ok = !block.flag.is_set(dso::Sp3Event::bad_abscent_position);
     if (position_ok && (!sp3err)) {
-      if (gcrf2ecef(dso::MjdEpoch(block.t), eop, R, dRdt)) {
+      if (gcrf2ecef(dso::MjdEpoch(block.t), eop, R, dRdt, fargs, eopr)) {
         return 8;
       }
       if (!it) {
@@ -268,15 +281,6 @@ int main(int argc, char *argv[]) {
     if (it >= 100)
       break;
   }
-
-  int n;
-  double GMSun, GMMoon;
-  bodvrd_c("SUN", "GM", 1, &n, &GMSun);
-  bodvrd_c("MOON", "GM", 1, &n, &GMMoon);
-  printf("Note Moon GM=%.15e\n", GM_Moon);
-  printf("CSPICE    GM=%.15e\n", GMMoon);
-  printf("Note Sun  GM=%.15e\n", GM_Sun);
-  printf("CSPICE    GM=%.15e\n", GMSun);
 
   return sp3err;
 }
