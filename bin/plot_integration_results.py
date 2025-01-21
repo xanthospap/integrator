@@ -60,6 +60,14 @@ parser.add_argument(
     required=False,
     help='Plot state results and differences (same plot).')
 
+parser.add_argument(
+    '--compare-to',
+    metavar='COMPARE_TO_FILE',
+    dest='compare_to',
+    required=False,
+    default=None,
+    help='Plot results versus a previous run.')
+
 #parser.add_argument(
 #    '--plot-norm',
 #    action='store_true',
@@ -73,6 +81,26 @@ parser.add_argument(
 #    dest='quiet',
 #    help='Do not show plot(s)')
 
+def loadfn(fn):
+    t = []; lx1=[]; ly1=[]; lz1=[];
+    lx2=[]; ly2=[]; lz2=[];
+    lvx1=[]; lvy1=[]; lvz1=[];
+    lvx2=[]; lvy2=[]; lvz2=[];
+    
+    with open(fn, 'r') as fin:
+        for line in fin.readlines():
+            if line[0] != '#':
+                try:
+                    sec, x1, y1, z1, vx1, vy1, vz1, x2, y2, z2, vx2, vy2, vz2 = [ float(x) for x in line.split(' ') ]
+                    t.append(sec)
+                    lx1.append(x1); ly1.append(y1); lz1.append(z1);
+                    lx2.append(x2); ly2.append(y2); lz2.append(z2);
+                    lvx1.append(vx1); lvy1.append(vy1); lvz1.append(vz1);
+                    lvx2.append(vx2); lvy2.append(vy2); lvz2.append(vz2);
+                except:
+                    pass
+    return t, lx1, ly1, lz1, lvx1, lvy1, lvz1, lx2, ly2, lz2, lvx2, lvy2, lvz2
+
 if __name__ == "__main__":
     args = parser.parse_args()
     scale_pos = args.scale_pos
@@ -82,6 +110,8 @@ if __name__ == "__main__":
     lx2=[]; ly2=[]; lz2=[];
     lvx1=[]; lvy1=[]; lvz1=[];
     lvx2=[]; lvy2=[]; lvz2=[];
+    mean_height=0e0; mean_velo=0e0;
+    N = 0
 
     for line in sys.stdin:
         if line[0] != '#':
@@ -92,6 +122,9 @@ if __name__ == "__main__":
                 lx2.append(x2); ly2.append(y2); lz2.append(z2);
                 lvx1.append(vx1); lvy1.append(vy1); lvz1.append(vz1);
                 lvx2.append(vx2); lvy2.append(vy2); lvz2.append(vz2);
+                N += 1
+                mean_height = mean_height * (N-1)/N + np.linalg.norm(np.array((x1,y1,z1))*1e-3)/N
+                mean_velo = mean_velo * (N-1)/N + np.linalg.norm(np.array((vx1,vy1,vz1)))/N
             except:
                 pass
         else:
@@ -105,14 +138,38 @@ if __name__ == "__main__":
     fig.subplots_adjust(hspace=0)
     group_labels = []
 
+## Plot results compared to another file
+    if args.compare_to is not None:
+        st, slx1, sly1, slz1, slvx1, slvy1, slvz1, slx2, sly2, slz2, slvx2, slvy2, slvz2 = loadfn(args.compare_to)
+        axs[0,0].plot(t, [scale_pos*(z[0]-z[1]) for z in zip(lx1,lx2)]  ,label=r'$\delta x$ current')
+        axs[1,0].plot(t, [scale_pos*(z[0]-z[1]) for z in zip(ly1,ly2)]  ,label=r'$\delta y$ current')
+        axs[2,0].plot(t, [scale_pos*(z[0]-z[1]) for z in zip(lz1,lz2)]  ,label=r'$\delta z$ current')
+        axs[0,1].plot(t, [scale_vel*(z[0]-z[1]) for z in zip(lvx1,lvx2)],label=r'$\delta v_x$ current')
+        axs[1,1].plot(t, [scale_vel*(z[0]-z[1]) for z in zip(lvy1,lvy2)],label=r'$\delta v_y$ current')
+        axs[2,1].plot(t, [scale_vel*(z[0]-z[1]) for z in zip(lvz1,lvz2)],label=r'$\delta v_z$ current')
+        
+        axs[0,0].plot(st, [scale_pos*(z[0]-z[1]) for z in zip(slx1, slx2)] ,label=r'$\delta x$ {:}'.format(args.compare_to))
+        axs[1,0].plot(st, [scale_pos*(z[0]-z[1]) for z in zip(sly1, sly2)] ,label=r'$\delta y$ {:}'.format(args.compare_to))
+        axs[2,0].plot(st, [scale_pos*(z[0]-z[1]) for z in zip(slz1, slz2)] ,label=r'$\delta z$ {:}'.format(args.compare_to))
+        axs[0,1].plot(st, [scale_vel*(z[0]-z[1]) for z in zip(slvx1,slvx2)],label=r'$\delta v_x$ {:}'.format(args.compare_to))
+        axs[1,1].plot(st, [scale_vel*(z[0]-z[1]) for z in zip(slvy1,slvy2)],label=r'$\delta v_y$ {:}'.format(args.compare_to))
+        axs[2,1].plot(st, [scale_vel*(z[0]-z[1]) for z in zip(slvz1,slvz2)],label=r'$\delta v_z$ {:}'.format(args.compare_to))
+        
+        axs[0,0].legend(loc='upper left')
+        axs[1,0].legend(loc='upper left')
+        axs[2,0].legend(loc='upper left')
+        axs[0,1].legend(loc='upper left')
+        axs[1,1].legend(loc='upper left')
+        axs[2,1].legend(loc='upper left')
+
 ## Plot state results (not differences)
-    if (args.nodif or args.withdif):
+    if (args.nodif or args.withdif) and not args.compare_to:
         print("Plotting state results ...")
         axs[0,0].plot(t, [scale_pos*z for z in lx1])
         axs[0,0].plot(t, [scale_pos*z for z in lx2])
         axs[0,1].plot(t, [scale_vel*z for z in lvx1])
         axs[0,1].plot(t, [scale_vel*z for z in lvx2])
-        #
+#
         axs[1,0].plot(t, [scale_pos*z for z in ly1])
         axs[1,0].plot(t, [scale_pos*z for z in ly2])
         axs[1,1].plot(t, [scale_vel*z for z in lvy1])
@@ -137,7 +194,7 @@ if __name__ == "__main__":
         # group_labels.append("acc. group 2")
 
 ## Plot differences per component
-    if (args.withdif or (not args.nodif)):
+    if (args.withdif or (not args.nodif)) and not args.compare_to:
         print("Plotting state diffs ...")
         axs[0,0].plot(t, [scale_pos*(z[0]-z[1]) for z in zip(lx1,lx2)])
         axs[1,0].plot(t, [scale_pos*(z[0]-z[1]) for z in zip(ly1,ly2)])
@@ -172,6 +229,7 @@ if __name__ == "__main__":
 
     axs[2,0].set_xlabel("Sec of Integration (since t0) [sec]")
     axs[2,1].set_xlabel("Sec of Integration (since t0) [sec]")
+    fig.suptitle('Mean Altitude is {:.1f}km, mean velocity is {:.1f}m/sec'.format(mean_height-6378., mean_velo), fontsize=16)
 
     plt.show()
 

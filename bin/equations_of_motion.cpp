@@ -10,14 +10,16 @@
 #include "yaml-cpp/yaml.h"
 #include <cstdio>
 
-constexpr const double GM_Moon = 0.49028010560e13;
-constexpr const double GM_Sun = 1.32712442076e20;
+constexpr const double GM_Moon = /*0.49028010560e13;*/4902.800076e9;
+constexpr const double GM_Sun = /*1.32712442076e20;*/132712440040.944e9;
 
 int gcrf2ecef(const dso::MjdEpoch &tai, dso::EopSeries &eops,
               Eigen::Matrix<double, 3, 3> &R,
-              Eigen::Matrix<double, 3, 3> &dRdt) noexcept {
-  double fargs[14];
-  dso::EopRecord eopr;
+              Eigen::Matrix<double, 3, 3> &dRdt,
+              double *fargs,
+              dso::EopRecord &eopr) noexcept {
+  // double fargs[14];
+  // dso::EopRecord eopr;
   // const auto tt = tai.tai2tt();
   const auto tt = tai.gps2tai().tai2tt();
   double X, Y;
@@ -71,9 +73,13 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   dso::MjdEpoch t = params->t0();
   t.add_seconds(dso::FractionalSeconds(tsec));
 
+  /* Dealunay args (14) */
+  double fargs[14];
+
   /* Celestial to Terrestrial Matrix */
+  dso::EopRecord eopr;
   Eigen::Matrix<double, 3, 3> R, dRdt;
-  if (gcrf2ecef(dso::MjdEpoch(t), *(params->eops()), R, dRdt)) {
+  if (gcrf2ecef(dso::MjdEpoch(t), *(params->eops()), R, dRdt, fargs, eopr)) {
     return 8;
   }
 
@@ -85,39 +91,44 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   const Eigen::VectorXd r_ecef = R * y0.segment<3>(0);
   Eigen::Matrix<double, 3, 1> acc;
   if (dso::sh2gradient_cunningham(stokes, r_ecef, acc, g,
-                                  //stokes.max_degree(), stokes.max_order(), -1,
-                                  80,80,-1,
+                                  stokes.max_degree(), stokes.max_order(), -1,
                                   -1, &(params->tw()), &(params->tm()))) {
     fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 1;
   }
 
   // TODO adding sun worsens results !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  Eigen::Matrix<double, 3, 1> acc_tb;
-  {
-    /* get Sun position in ICRF */
-    Eigen::Matrix<double, 3, 1> rtb_sun;
-    if (dso::planet_pos(dso::Planet::SUN, t.tai2tt(), rtb_sun)) {
-      fprintf(stderr, "ERROR Failed to compute Sun position!\n");
-      return 2;
-    }
-    acc_tb = dso::point_mass_acceleration(y0.segment<3>(0), rtb_sun, GM_Sun, g);
-    /* get Moon position in ICRF */
-    Eigen::Matrix<double, 3, 1> rtb_moon;
-    if (dso::planet_pos(dso::Planet::MOON, t.tai2tt(), rtb_moon)) {
-      fprintf(stderr, "ERROR Failed to compute Moon position!\n");
-      return 2;
-    }
-    acc_tb +=
-        dso::point_mass_acceleration(y0.segment<3>(0), rtb_moon, GM_Moon, g);
+  Eigen::Matrix<double, 3, 1> acc_moon;
+  Eigen::Matrix<double, 3, 1> acc_sun;
+  /* get Sun position in ICRF */
+  Eigen::Matrix<double, 3, 1> rtb_sun;
+  if (dso::planet_pos(dso::Planet::SUN, t.tai2tt(), rtb_sun)) {
+    fprintf(stderr, "ERROR Failed to compute Sun position!\n");
+    return 2;
   }
+  acc_sun = dso::point_mass_acceleration(y0.segment<3>(0), rtb_sun, GM_Sun);
+
+  /* get Moon position in ICRF */
+  Eigen::Matrix<double, 3, 1> rtb_moon;
+  if (dso::planet_pos(dso::Planet::MOON, t.tai2tt(), rtb_moon)) {
+    fprintf(stderr, "ERROR Failed to compute Moon position!\n");
+    return 2;
+  }
+  acc_moon = dso::point_mass_acceleration(y0.segment<3>(0), rtb_moon, GM_Moon);
+
+  /* Solid Earth Tide */
+  params->mse_tide->stokes_coeffs(t.tai2tt(), t.tai2ut1(eopr.dut()), rtb_moon,
+                                  rtb_sun, fargs);
 
   /* set velocity vector (ICRF) */
   y.segment<3>(0) = y0.segment<3>(3);
 
   /* ECEF to ICRF note that y = (v, a) and y0 = (r, v) */
-  y.segment<3>(3) =
-      R.transpose() * acc + acc_tb;
+  //y.segment<3>(3) =
+  //    R.transpose() * acc + acc_tb;
+  y.segment<3>(3) = (acc_moon + acc_sun);
+  y.segment<3>(3) += R.transpose() * acc;
+
 
   return 0;
 }
@@ -187,6 +198,9 @@ int main(int argc, char *argv[]) {
     assert(stokes.max_order() == ORDER);
   }
 
+  /* Solid Earth Tides */
+  dso::SolidEarthTide setide(iers2010::GMe, iers2010::Re, GM_Sun, GM_Moon);
+
   /* setup integration parameters */
   dso::IntegrationParameters params;
   params.meops = &eop;
@@ -251,9 +265,18 @@ int main(int argc, char *argv[]) {
       }
     }
     ++it;
-    if (it >= 1000)
+    if (it >= 100)
       break;
   }
+
+  int n;
+  double GMSun, GMMoon;
+  bodvrd_c("SUN", "GM", 1, &n, &GMSun);
+  bodvrd_c("MOON", "GM", 1, &n, &GMMoon);
+  printf("Note Moon GM=%.15e\n", GM_Moon);
+  printf("CSPICE    GM=%.15e\n", GMMoon);
+  printf("Note Sun  GM=%.15e\n", GM_Sun);
+  printf("CSPICE    GM=%.15e\n", GMSun);
 
   return sp3err;
 }
