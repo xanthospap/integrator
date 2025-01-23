@@ -18,10 +18,7 @@ int gcrf2ecef(const dso::MjdEpoch &tai, dso::EopSeries &eops,
               Eigen::Matrix<double, 3, 3> &dRdt,
               double *fargs,
               dso::EopRecord &eopr) noexcept {
-  // double fargs[14];
-  // dso::EopRecord eopr;
-  // const auto tt = tai.tai2tt();
-  const auto tt = tai.gps2tai().tai2tt();
+  const auto tt = tai.tai2tt();
   double X, Y;
 
   /* compute (X, Y)_{cip} and (14) fundamental arguments */
@@ -127,13 +124,20 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
     return 1;
   }
 
+  {
+    // print for debugging
+    const auto tgps = t.tai2gps();
+    printf("%.15f %.15f %.15f %.15f\n", tgps.as_mjd(), acc_moon(0), acc_moon(1), acc_moon(2));
+    //printf("%.15f %.15f %.15f %.15f\n", tgps.as_mjd(), acc_sun(0), acc_sun(1), acc_sun(2));
+    //printf("%.15f %.15f %.15f %.15f\n", tgps.as_mjd(), acc_set(0), acc_set(1), acc_set(2));
+  }
+
   /* set velocity vector (ICRF) */
   y.segment<3>(0) = y0.segment<3>(3);
 
   /* ECEF to ICRF note that y = (v, a) and y0 = (r, v) */
   //y.segment<3>(3) =
   //    R.transpose() * acc + acc_tb;
-  acc_sun << 0e0, 0e0, 0e0;
   y.segment<3>(3) = (acc_moon + acc_sun);
   y.segment<3>(3) += R.transpose() * acc_set;
   y.segment<3>(3) += R.transpose() * acc;
@@ -165,8 +169,11 @@ int main(int argc, char *argv[]) {
     sv = dso::sp3::SatelliteId{argv[3]};
   }
 
-  /* get states */
+  /* get starting epoch in TAI */
   auto start_t = sp3.start_epoch();
+  if (!std::strcmp(sp3.time_sys(), "GPS")) {
+    start_t = start_t.gps2tai();
+  }
 
   /* EOPs */
   dso::EopSeries eop;
@@ -214,6 +221,7 @@ int main(int argc, char *argv[]) {
   params.meops = &eop;
   params.mgrav = &stokes;
   params.mse_tide = &setide;
+  params.mtai0 = dso::MjdEpoch(start_t);
 
   /* setup the integrator */
   dso::Dop853 dop853(deriv, 6, &params, 1e-9, 1e-12);
@@ -223,6 +231,7 @@ int main(int argc, char *argv[]) {
   double fargs[14];
   dso::EopRecord eopr;
 
+  /* Just for testing Vs costg */
   Eigen::VectorXd state = Eigen::Matrix<double, 6, 1>::Zero();
   Eigen::VectorXd y = Eigen::Matrix<double, 6, 1>::Zero();
   Eigen::Matrix<double, 3, 3> R, dRdt;
@@ -235,52 +244,96 @@ int main(int argc, char *argv[]) {
       printf("Something went wrong ....status = %3d\n", sp3err);
       return 1;
     }
-    bool position_ok = !block.flag.is_set(dso::Sp3Event::bad_abscent_position);
-    if (position_ok && (!sp3err)) {
-      if (gcrf2ecef(dso::MjdEpoch(block.t), eop, R, dRdt, fargs, eopr)) {
-        return 8;
-      }
-      if (!it) {
-        /* first state of satellite in file; transform to celestial and store 
-         * as state and start_t. This is where we start integrating from.
-         */
-        state << block.state[0] * 1e3, block.state[1] * 1e3,
-            block.state[2] * 1e3, block.state[4] * 1e-1, block.state[5] * 1e-1,
-            block.state[6] * 1e-1;
-        y.segment<3>(0) = R.transpose() * state.segment<3>(0);
-        y.segment<3>(3) = R.transpose() * state.segment<3>(3) +
-                          dRdt.transpose() * state.segment<3>(0);
-        start_t = block.t;
-        state = y;
-      } else {
-        /* new entry; seconds since intial epoch */
-        dso::FractionalSeconds sec =
-            block.t.diff<dso::DateTimeDifferenceType::FractionalSeconds>(
-                start_t);
-        /* integrate from initial conditions to this epoch */
-        if (dop853.integrate(dso::MjdEpoch(start_t), sec.seconds(), state, y)) {
-          fprintf(stderr, "ERROR. Integration failed! sec is %.3f\n",
-                  sec.seconds());
-          return 1;
-        }
-        /* transform integration results to ECEF */
-        Eigen::VectorXd yt = y;
-        y.segment<3>(0) = R * yt.segment<3>(0);
-        y.segment<3>(3) = R * yt.segment<3>(3) + dRdt * yt.segment<3>(0);
-        printf("%.12f %.6f %.6f %.6f %.9f %.9f %.9f %.6f %.6f %.6f %.9f %.9f "
-               "%.9f\n",
-               //block.t.imjd().as_underlying_type() +
-               //    block.t.fractional_days().days(),
-               sec.seconds(),
-               block.state[0] * 1e3, block.state[1] * 1e3, block.state[2] * 1e3,
-               block.state[4] * 1e-1, block.state[5] * 1e-1,
-               block.state[6] * 1e-1, y(0), y(1), y(2), y(3), y(4), y(5));
-      }
+    /* time of current block in TAI */
+    auto block_tai = block.t;
+    if (!std::strcmp(sp3.time_sys(), "GPS")) {
+      block_tai = block_tai.gps2tai();
+    }
+    /* GCRF to ITRF rotation matrix */
+    if (gcrf2ecef(dso::MjdEpoch(block_tai), eop, R, dRdt, fargs, eopr)) {
+      return 8;
+    }
+    /* get state for current epoch ITRF */
+    state << block.state[0] * 1e3, block.state[1] * 1e3, block.state[2] * 1e3,
+        block.state[4] * 1e-1, block.state[5] * 1e-1, block.state[6] * 1e-1;
+    /* transform state to GCRF */
+    y.segment<3>(0) = R.transpose() * state.segment<3>(0);
+    y.segment<3>(3) = R.transpose() * state.segment<3>(3) +
+                      dRdt.transpose() * state.segment<3>(0);
+    state = y;
+    /* seconds since initial epoch */
+    dso::FractionalSeconds sec =
+        block_tai.diff<dso::DateTimeDifferenceType::FractionalSeconds>(start_t);
+    /* compute derivative at this epoch */
+    if (deriv(sec.seconds(), state, &params, y)) {
+      fprintf(stderr, "ERROR. Failed computing derivative!\n");
+      return 1;
     }
     ++it;
-    if (it >= 100)
+    if (it >= 2000)
       break;
   }
+
+  //Eigen::VectorXd state = Eigen::Matrix<double, 6, 1>::Zero();
+  //Eigen::VectorXd y = Eigen::Matrix<double, 6, 1>::Zero();
+  //Eigen::Matrix<double, 3, 3> R, dRdt;
+  //std::size_t it = 0;
+  //dso::Sp3DataBlock block;
+  //int sp3err = 0;
+  //while (!sp3err) {
+  //  sp3err = sp3.get_next_data_block(sv, block);
+  //  if (sp3err > 0) {
+  //    printf("Something went wrong ....status = %3d\n", sp3err);
+  //    return 1;
+  //  }
+  //  bool position_ok = !block.flag.is_set(dso::Sp3Event::bad_abscent_position);
+  //  if (position_ok && (!sp3err)) {
+  //    auto block_tai = block.t;
+  //    if (!std::strcmp(sp3.time_sys(), "GPS")) {
+  //      block_tai = block_tai.gps2tai();
+  //    }
+  //    if (gcrf2ecef(dso::MjdEpoch(block_tai), eop, R, dRdt, fargs, eopr)) {
+  //      return 8;
+  //    }
+  //    if (!it) {
+  //      /* first state of satellite in file; transform to celestial and store 
+  //       * as state and start_t. This is where we start integrating from.
+  //       */
+  //      state << block.state[0] * 1e3, block.state[1] * 1e3,
+  //          block.state[2] * 1e3, block.state[4] * 1e-1, block.state[5] * 1e-1,
+  //          block.state[6] * 1e-1;
+  //      y.segment<3>(0) = R.transpose() * state.segment<3>(0);
+  //      y.segment<3>(3) = R.transpose() * state.segment<3>(3) +
+  //                        dRdt.transpose() * state.segment<3>(0);
+  //      start_t = block_tai;
+  //      state = y;
+  //    } else {
+  //      /* new entry; seconds since intial epoch */
+  //      dso::FractionalSeconds sec =
+  //          block_tai.diff<dso::DateTimeDifferenceType::FractionalSeconds>(
+  //              start_t);
+  //      /* integrate from initial conditions to this epoch */
+  //      if (dop853.integrate(dso::MjdEpoch(start_t), sec.seconds(), state, y)) {
+  //        fprintf(stderr, "ERROR. Integration failed! sec is %.3f\n",
+  //                sec.seconds());
+  //        return 1;
+  //      }
+  //      /* transform integration results to ECEF */
+  //      Eigen::VectorXd yt = y;
+  //      y.segment<3>(0) = R * yt.segment<3>(0);
+  //      y.segment<3>(3) = R * yt.segment<3>(3) + dRdt * yt.segment<3>(0);
+  //      printf("%.12f %.6f %.6f %.6f %.9f %.9f %.9f %.6f %.6f %.6f %.9f %.9f "
+  //             "%.9f\n",
+  //             sec.seconds(),
+  //             block.state[0] * 1e3, block.state[1] * 1e3, block.state[2] * 1e3,
+  //             block.state[4] * 1e-1, block.state[5] * 1e-1,
+  //             block.state[6] * 1e-1, y(0), y(1), y(2), y(3), y(4), y(5));
+  //    }
+  //  }
+  //  ++it;
+  //  if (it >= 100)
+  //    break;
+  //}
 
   return sp3err;
 }
