@@ -4,11 +4,13 @@
 #include "iers/gravity.hpp"
 #include "iers/iau.hpp"
 #include "iers/icgemio.hpp"
+#include "iers/relativity.hpp"
 #include "integration_parameters.hpp"
 #include "sp3.hpp"
 #include "geodesy/units.hpp"
 #include "yaml-cpp/yaml.h"
 #include <cstdio>
+#include <datetime/tpdate.hpp>
 
 constexpr const double GM_Moon = /*0.49028010560e13;*/4902.800076e9;
 constexpr const double GM_Sun = /*1.32712442076e20;*/132712440040.944e9;
@@ -94,15 +96,21 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
     return 1;
   }
 
+  // TODO adding sun worsens results !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   Eigen::Matrix<double, 3, 1> acc_moon;
   Eigen::Matrix<double, 3, 1> acc_sun;
-  /* get Sun position in ICRF */
-  Eigen::Matrix<double, 3, 1> rtb_sun;
-  if (dso::planet_pos(dso::Planet::SUN, t.tai2tt(), rtb_sun)) {
+  /* get Sun position & velocity in ICRF */
+  Eigen::Matrix<double, 6, 1> rtb_sun;
+  //if (dso::planet_pos(dso::Planet::SUN, t.tai2tt(), rtb_sun)) {
+  //  fprintf(stderr, "ERROR Failed to compute Sun position!\n");
+  //  return 2;
+  //}
+  if (dso::planet_state(dso::Planet::SUN, t.tai2tt(), rtb_sun)) {
     fprintf(stderr, "ERROR Failed to compute Sun position!\n");
     return 2;
   }
-  acc_sun = dso::point_mass_acceleration(y0.segment<3>(0), rtb_sun, GM_Sun);
+  acc_sun = dso::point_mass_acceleration(y0.segment<3>(0),
+                                         rtb_sun.segment<3>(0), GM_Sun);
 
   /* get Moon position in ICRF */
   Eigen::Matrix<double, 3, 1> rtb_moon;
@@ -112,15 +120,93 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   }
   acc_moon = dso::point_mass_acceleration(y0.segment<3>(0), rtb_moon, GM_Moon);
 
+  /* Relativistic Correction */
+  Eigen::Matrix<double, 3, 1> acc_rel =
+      dso::iers2010_relativistic_acceleration(y0, rtb_sun);
+
   /* Solid Earth Tide (ITRF) */
   Eigen::Matrix<double, 3, 1> acc_set;
   params->mse_tide->stokes_coeffs(t.tai2tt(), t.tai2ut1(eopr.dut()),
-                                  R * rtb_moon, R * rtb_sun, fargs);
+                                  R * rtb_moon, R * rtb_sun.segment<3>(0),
+                                  fargs);
   if (dso::sh2gradient_cunningham(params->mse_tide->stokes_coeffs(), r_ecef,
                                   acc_set, g, -1, -1, -1, -1, &(params->tw()),
                                   &(params->tm()))) {
     fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 1;
+  }
+
+  /* Solid Earth Pole Tide */
+  dso::StokesCoeffs sept_stokes(3, 3);
+  sept_stokes.clear();
+  Eigen::Matrix<double, 3, 1> acc_setp;
+  if (dso::PoleTide::stokes_coeffs(t.tai2tt(), eopr.xp(), eopr.yp(),
+                                   sept_stokes.C(2, 1), sept_stokes.S(2, 1))) {
+    return 1;
+  }
+  if (dso::sh2gradient_cunningham(sept_stokes, r_ecef,
+                                  acc_setp, g, -1, -1, -1, -1, &(params->tw()),
+                                  &(params->tm()))) {
+    fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
+    return 1;
+  }
+
+  /* Ocean Pole Tide */
+  Eigen::Matrix<double, 3, 1> acc_otp;
+  if (params->mop_tide->stokes_coeffs(t.tai2tt(), eopr.xp(), eopr.yp(),
+                                      params->mop_tide->max_degree(),
+                                      params->mop_tide->max_order())) {
+    fprintf(stderr, "ERROR Failed computing Stokes Coefficients\n");
+    return 1;
+  }
+  params->mop_tide->stokes_coeffs().C(0, 0) =
+      params->mop_tide->stokes_coeffs().C(1, 0) =
+          params->mop_tide->stokes_coeffs().C(1, 1) = 0e0;
+  params->mop_tide->stokes_coeffs().S(0, 0) =
+      params->mop_tide->stokes_coeffs().S(1, 0) =
+          params->mop_tide->stokes_coeffs().S(1, 1) = 0e0;
+  if (dso::sh2gradient_cunningham(params->mop_tide->stokes_coeffs(), r_ecef,
+                                  acc_otp, g, params->mop_tide->max_degree(),
+                                  params->mop_tide->max_order(), -1, -1,
+                                  &(params->tw()), &(params->tm()))) {
+    fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
+    return 1;
+  }
+
+  /* Dealiasing */
+  Eigen::Matrix<double, 3, 1> acc_das;
+  // const dso::datetime<dso::nanoseconds> taidt = dso::from_mjdepoch();
+  if (params->mdealias->coefficients_at(dso::from_mjdepoch<dso::nanoseconds>(t.tai2tt()), stokes)) {
+    fprintf(stderr, "Failed interpolating dealiasing coefficients\n");
+    return 1;
+  }
+  if (dso::sh2gradient_cunningham(stokes, r_ecef,
+                                  acc_otp, g, params->mdealias_maxdegree,
+                                  params->mdealias_maxorder, -1, -1,
+                                  &(params->tw()), &(params->tm()))) {
+    fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
+    return 1;
+  }
+
+
+  {
+    // print for debugging
+    const auto tgps = t.tai2gps();
+
+    // OK
+    //printf("%.15f %.15f %.15f %.15f\n", tgps.as_mjd(), acc_moon(0), acc_moon(1), acc_moon(2));
+    //printf("%.15f %.15f %.15f %.15f\n", tgps.as_mjd(), acc_sun(0), acc_sun(1), acc_sun(2));
+    //const auto acc_setI = R.transpose() * acc_setp;
+    //printf("%.15f %.15f %.15f %.15f\n", tgps.as_mjd(), acc_setI(0), acc_setI(1), acc_setI(2));
+    //const auto acc_setI = R.transpose() * acc_otp;
+    //printf("%.15f %.15f %.15f %.15f\n", tgps.as_mjd(), acc_setI(0), acc_setI(1), acc_setI(2));
+    //printf("%.15f %.15f %.15f %.15f\n", tgps.as_mjd(), acc_rel(0), acc_rel(1), acc_rel(2));
+    const auto acc_setI = R.transpose() * acc_das;
+    printf("%.15f %.15f %.15f %.15f\n", tgps.as_mjd(), acc_setI(0), acc_setI(1), acc_setI(2));
+
+    // TODO  
+    // const auto acc_setI = R.transpose() * acc_set;
+    // printf("%.15f %.15f %.15f %.15f\n", tgps.as_mjd(), acc_setI(0), acc_setI(1), acc_setI(2));
   }
 
   /* set velocity vector (ICRF) */
@@ -129,9 +215,9 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   /* ECEF to ICRF note that y = (v, a) and y0 = (r, v) */
   //y.segment<3>(3) =
   //    R.transpose() * acc + acc_tb;
-  // y.segment<3>(3) = (acc_moon + acc_sun);
-  // y.segment<3>(3) += R.transpose() * (acc_set + acc);
-  y.segment<3>(3) = R.transpose() * acc;
+  y.segment<3>(3) = (acc_moon + acc_sun + acc_rel);
+  y.segment<3>(3) += R.transpose() * acc_set;
+  y.segment<3>(3) += R.transpose() * acc;
 
   return 0;
 }
@@ -207,12 +293,44 @@ int main(int argc, char *argv[]) {
   /* Solid Earth Tides */
   dso::SolidEarthTide setide(iers2010::GMe, iers2010::Re, GM_Sun, GM_Moon);
 
+  /* Solid Earth Pole Tide */
+  // no need to initialize, will use the static function: 
+  // PoleTide::stokes_coeffs
+  
+  /* Ocean Pole Tide */
+  tmp = config["ocean-pole-tide"]["model"].as<std::string>();
+  dso::OceanPoleTide *opt=nullptr;
+  if (tmp == "Desai02") {
+    int DEGREE = config["ocean-pole-tide"]["degree"].as<int>();
+    int ORDER =  config["ocean-pole-tide"]["order"].as<int>();
+    tmp = config["ocean-pole-tide"]["coeffs"].as<std::string>();
+    opt = new dso::OceanPoleTide(DEGREE, ORDER, tmp.c_str());
+   }
+
+   /* Dealiasing */
+   tmp = config["dealiasing"]["model"].as<std::string>();
+   dso::Aod1bDataStream<dso::AOD1BCoefficientType::GLO> *dap = nullptr;
+   if (tmp != "") {
+     const auto f = config["dealiasing"]["data-file"].as<std::string>();
+     const auto d = config["dealiasing"]["data-dir"].as<std::string>();
+     dap = new dso::Aod1bDataStream<dso::AOD1BCoefficientType::GLO>(f.c_str(),
+                                                                    d.c_str());
+   }
+
   /* setup integration parameters */
   dso::IntegrationParameters params;
   params.meops = &eop;
   params.mgrav = &stokes;
   params.mse_tide = &setide;
   params.mtai0 = dso::MjdEpoch(start_t);
+  params.mop_tide = opt;
+  params.mdealias = dap;
+  if (params.mdealias) {
+    params.mdealias_maxdegree =
+        config["dealiasing"]["degree"].as<int>();
+    params.mdealias_maxorder =
+        config["dealiasing"]["order"].as<int>();
+  }
 
   /* setup the integrator */
   dso::Dop853 dop853(deriv, 6, &params, 1e-9, 1e-12);
@@ -222,6 +340,7 @@ int main(int argc, char *argv[]) {
   double fargs[14];
   dso::EopRecord eopr;
 
+  /* Just for testing Vs costg */
   Eigen::VectorXd state = Eigen::Matrix<double, 6, 1>::Zero();
   Eigen::VectorXd y = Eigen::Matrix<double, 6, 1>::Zero();
   Eigen::Matrix<double, 3, 3> R, dRdt;
@@ -234,52 +353,33 @@ int main(int argc, char *argv[]) {
       printf("Something went wrong ....status = %3d\n", sp3err);
       return 1;
     }
-    bool position_ok = !block.flag.is_set(dso::Sp3Event::bad_abscent_position);
-    if (position_ok && (!sp3err)) {
-      auto block_tai = block.t;
-      if (!std::strcmp(sp3.time_sys(), "GPS")) {
-        block_tai = block_tai.gps2tai();
-      }
-      if (gcrf2ecef(dso::MjdEpoch(block_tai), eop, R, dRdt, fargs, eopr)) {
-        return 8;
-      }
-      if (!it) {
-        /* first state of satellite in file; transform to celestial and store 
-         * as state and start_t. This is where we start integrating from.
-         */
-        state << block.state[0] * 1e3, block.state[1] * 1e3,
-            block.state[2] * 1e3, block.state[4] * 1e-1, block.state[5] * 1e-1,
-            block.state[6] * 1e-1;
-        y.segment<3>(0) = R.transpose() * state.segment<3>(0);
-        y.segment<3>(3) = R.transpose() * state.segment<3>(3) +
-                          dRdt.transpose() * state.segment<3>(0);
-        start_t = block_tai;
-        state = y;
-      } else {
-        /* new entry; seconds since intial epoch */
-        dso::FractionalSeconds sec =
-            block_tai.diff<dso::DateTimeDifferenceType::FractionalSeconds>(
-                start_t);
-        /* integrate from initial conditions to this epoch */
-        if (dop853.integrate(dso::MjdEpoch(start_t), sec.seconds(), state, y)) {
-          fprintf(stderr, "ERROR. Integration failed! sec is %.3f\n",
-                  sec.seconds());
-          return 1;
-        }
-        /* transform integration results to ECEF */
-        Eigen::VectorXd yt = y;
-        y.segment<3>(0) = R * yt.segment<3>(0);
-        y.segment<3>(3) = R * yt.segment<3>(3) + dRdt * yt.segment<3>(0);
-        printf("%.12f %.6f %.6f %.6f %.9f %.9f %.9f %.6f %.6f %.6f %.9f %.9f "
-               "%.9f\n",
-               sec.seconds(),
-               block.state[0] * 1e3, block.state[1] * 1e3, block.state[2] * 1e3,
-               block.state[4] * 1e-1, block.state[5] * 1e-1,
-               block.state[6] * 1e-1, y(0), y(1), y(2), y(3), y(4), y(5));
-      }
+    /* time of current block in TAI */
+    auto block_tai = block.t;
+    if (!std::strcmp(sp3.time_sys(), "GPS")) {
+      block_tai = block_tai.gps2tai();
+    }
+    /* GCRF to ITRF rotation matrix */
+    if (gcrf2ecef(dso::MjdEpoch(block_tai), eop, R, dRdt, fargs, eopr)) {
+      return 8;
+    }
+    /* get state for current epoch ITRF */
+    state << block.state[0] * 1e3, block.state[1] * 1e3, block.state[2] * 1e3,
+        block.state[4] * 1e-1, block.state[5] * 1e-1, block.state[6] * 1e-1;
+    /* transform state to GCRF */
+    y.segment<3>(0) = R.transpose() * state.segment<3>(0);
+    y.segment<3>(3) = R.transpose() * state.segment<3>(3) +
+                      dRdt.transpose() * state.segment<3>(0);
+    state = y;
+    /* seconds since initial epoch */
+    dso::FractionalSeconds sec =
+        block_tai.diff<dso::DateTimeDifferenceType::FractionalSeconds>(start_t);
+    /* compute derivative at this epoch */
+    if (deriv(sec.seconds(), state, &params, y)) {
+      fprintf(stderr, "ERROR. Failed computing derivative!\n");
+      return 1;
     }
     ++it;
-    if (it >= 100)
+    if (it >= 2000)
       break;
   }
 

@@ -31,6 +31,8 @@ public:
   AtmosphericTide *mat_tide{nullptr};
   /* dealiasing */
   Aod1bDataStream<AOD1BCoefficientType::GLO> *mdealias{nullptr};
+  int mdealias_maxdegree{0};
+  int mdealias_maxorder{0};
 
   /* third body gravity 
    *                       | Bit Nr. | Default state

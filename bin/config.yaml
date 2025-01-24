@@ -9,3 +9,20 @@ gravity:
   model: data/EIGEN-GRGS.RL04.MEAN-FIELD.gfc
   degree: 80
   order: 80
+
+ocean-pole-tide:
+  ## Leave model name empty to not include effect
+  ## Applicable Models: 'Desai02'
+  model: Desai02
+  coeffs: data/desaiscopolecoef.txt
+  degree: 180
+  order: 180
+
+dealiasing:
+  ## Leave model name empty to not include effect
+  model: "AOD1B RL06"
+  data-file: data/AOD1B_2008-07-03_X_06.asc
+  data-dir: data
+  degree: 180
+  order: 180
+
