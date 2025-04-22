@@ -73,6 +73,8 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   /* current time in TAI */
   dso::MjdEpoch t = params->t0();
   t.add_seconds(dso::FractionalSeconds(tsec));
+  /* current time in GPST (debugging) */
+  const auto tgps = t.tai2gps();
 
   /* Dealunay args (14) */
   double fargs[14];
@@ -90,12 +92,17 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   /* compute acceleration for given epoch/position (ECEF) */
   [[maybe_unused]] Eigen::Matrix<double, 3, 3> g;
   const Eigen::VectorXd r_ecef = R * y0.segment<3>(0);
-  Eigen::Matrix<double, 3, 1> acc;
-  if (dso::sh2gradient_cunningham(stokes, r_ecef, acc, g,
+  Eigen::Matrix<double, 3, 1> acc_grav;
+  if (dso::sh2gradient_cunningham(stokes, r_ecef, acc_grav, g,
           stokes.max_degree(), stokes.max_order(), -1,
           -1, &(params->tw()), &(params->tm()))) {
     fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 1;
+  }
+  {
+    const auto acc = R.transpose() * acc_grav;
+    printf("%.15f %.15f %.15f %.15f", tgps.as_mjd(), acc(0), acc(1), acc(2));
+    y.segment<3>(0) += acc;
   }
 
   Eigen::Matrix<double, 3, 1> acc_moon;
@@ -108,6 +115,8 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   }
   acc_sun = dso::point_mass_acceleration(y0.segment<3>(0),
       rtb_sun.segment<3>(0), GM_Sun);
+  printf(" %.15f %.15f %.15f", acc_sun(0), acc_sun(1), acc_sun(2));
+  y.segment<3>(0) += acc_sun;
 
   /* get Moon position in ICRF */
   Eigen::Matrix<double, 3, 1> rtb_moon;
@@ -116,9 +125,13 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
     return 2;
   }
   acc_moon = dso::point_mass_acceleration(y0.segment<3>(0), rtb_moon, GM_Moon);
+  printf(" %.15f %.15f %.15f", acc_moon(0), acc_moon(1), acc_moon(2));
+  y.segment<3>(0) += acc_moon;
 
   /* Relativistic Correction */
   Eigen::Matrix<double, 3, 1> acc_rel = dso::iers2010_relativistic_acceleration(y0, rtb_sun);
+  printf(" %.15f %.15f %.15f", acc_rel(0), acc_rel(1), acc_rel(2));
+  y.segment<3>(0) += acc_rel;
 
   /* Solid Earth Tide (ITRF) */
   Eigen::Matrix<double, 3, 1> acc_set;
@@ -130,6 +143,11 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
           &(params->tm()))) {
     fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 1;
+  }
+  {
+    const auto acc = R.transpose() * acc_set;
+    printf(" %.15f %.15f %.15f", acc(0), acc(1), acc(2));
+    y.segment<3>(0) += acc;
   }
 
   /* Solid Earth Pole Tide */
@@ -145,6 +163,11 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
           &(params->tm()))) {
     fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 1;
+  }
+  {
+    const auto acc = R.transpose() * acc_setp;
+    printf(" %.15f %.15f %.15f", acc(0), acc(1), acc(2));
+    y.segment<3>(0) += acc;
   }
 
   /* Ocean Pole Tide */
@@ -164,6 +187,11 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
     fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 1;
   }
+  {
+    const auto acc = R.transpose() * acc_otp;
+    printf(" %.15f %.15f %.15f", acc(0), acc(1), acc(2));
+    y.segment<3>(0) += acc;
+  }
 
   /* Dealiasing */
   Eigen::Matrix<double, 3, 1> acc_das;
@@ -171,13 +199,9 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
     fprintf(stderr, "Failed interpolating dealiasing coefficients\n");
     return 1;
   }
-  /* TODO
-   * This is only needed for testing vs COSTG and should be removed from 
-   * "real" code 
-   */
-  stokes.C(0,0) = 0e0;
-  stokes.C(1,0) = stokes.C(1,1) = 0e0;
-  stokes.S(1,1) = 0e0;
+  stokes.C(0, 0) = 0e0;
+  stokes.C(1, 0) = stokes.C(1, 1) = 0e0;
+  stokes.S(1, 1) = 0e0;
   if (dso::sh2gradient_cunningham(stokes, r_ecef,
           acc_das, g, params->mdealias_maxdegree,
           params->mdealias_maxorder, -1, -1,
@@ -185,44 +209,31 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
     fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 1;
   }
-
   {
-    // print for debugging
-    const auto tgps = t.tai2gps();
-
-    // OK
-    // printf("%.15f %.15f %.15f %.15f\n", tgps.as_mjd(), acc_moon(0), acc_moon(1), acc_moon(2));
-    // printf("%.15f %.15f %.15f %.15f\n", tgps.as_mjd(), acc_sun(0), acc_sun(1), acc_sun(2));
-    // const auto acc_setI = R.transpose() * acc_setp;
-    // printf("%.15f %.15f %.15f %.15f\n", tgps.as_mjd(), acc_setI(0), acc_setI(1), acc_setI(2));
-    // const auto acc_setI = R.transpose() * acc_otp;
-    // printf("%.15f %.15f %.15f %.15f\n", tgps.as_mjd(), acc_setI(0), acc_setI(1), acc_setI(2));
-    // printf("%.15f %.15f %.15f %.15f\n", tgps.as_mjd(), acc_rel(0), acc_rel(1), acc_rel(2));
-    const auto acc_setI = R.transpose() * acc_das;
-    printf("%.15f %.15f %.15f %.15f\n", tgps.as_mjd(), acc_setI(0), acc_setI(1), acc_setI(2));
-
-    // TODO
-    // const auto acc_setI = R.transpose() * acc_set;
-    // printf("%.15f %.15f %.15f %.15f\n", tgps.as_mjd(), acc_setI(0), acc_setI(1), acc_setI(2));
+    const auto acc = R.transpose() * acc_das;
+    printf(" %.15f %.15f %.15f", acc(0), acc(1), acc(2));
+    y.segment<3>(0) += acc;
   }
 
   /* set velocity vector (ICRF) */
+  y.segment<3>(3) = y.segment<3>(0);
   y.segment<3>(0) = y0.segment<3>(3);
 
   /* ECEF to ICRF note that y = (v, a) and y0 = (r, v) */
   // y.segment<3>(3) =
   //     R.transpose() * acc + acc_tb;
-  y.segment<3>(3) = (acc_moon + acc_sun + acc_rel);
-  y.segment<3>(3) += R.transpose() * acc_set;
-  y.segment<3>(3) += R.transpose() * acc;
+  //y.segment<3>(3) = (acc_moon + acc_sun + acc_rel);
+  //y.segment<3>(3) += R.transpose() * acc_set;
+  //y.segment<3>(3) += R.transpose() * acc;
 
+  printf("\n");
   return 0;
 }
 
 int main(int argc, char* argv[])
 {
   if (argc < 3) {
-    fprintf(stderr, "Usage: %s CONFIG SP3_file [SAT_ID]\n", argv[0]);
+    fprintf(stderr, "Usage: %s [CONFIG] [00orbit_itrf.sp3] \n", argv[0]);
     return 1;
   }
 
@@ -330,8 +341,8 @@ int main(int argc, char* argv[])
   }
 
   /* setup the integrator */
-  dso::Dop853 dop853(deriv, 6, &params, 1e-9, 1e-12);
-  dop853.set_stiffness_check(10);
+  // dso::Dop853 dop853(deriv, 6, &params, 1e-9, 1e-12);
+  // dop853.set_stiffness_check(10);
 
   /* dummy */
   double fargs[14];
@@ -345,6 +356,7 @@ int main(int argc, char* argv[])
   dso::Sp3DataBlock block;
   int sp3err = 0;
   while (!sp3err) {
+    /* get next redord from sp3 */
     sp3err = sp3.get_next_data_block(sv, block);
     if (sp3err > 0) {
       printf("Something went wrong ....status = %3d\n", sp3err);
@@ -368,15 +380,15 @@ int main(int argc, char* argv[])
     state = y;
     /* seconds since initial epoch */
     dso::FractionalSeconds sec = block_tai.diff<dso::DateTimeDifferenceType::FractionalSeconds>(start_t);
-    /* compute derivative at this epoch */
+    /* compute accelerations at this epoch */
     if (deriv(sec.seconds(), state, &params, y)) {
       fprintf(stderr, "ERROR. Failed computing derivative!\n");
       return 1;
     }
     ++it;
-    if (it >= 2000)
-      break;
   }
+
+  printf("# Num of epochs parsed/used: %ld\n", it);
 
   return sp3err;
 }
