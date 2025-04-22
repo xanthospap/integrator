@@ -10,6 +10,14 @@ gravity:
   degree: 180
   order: 180
 
+ocean-tide:
+  ## Leave model name empty to not include effect
+  model: "FES14b"
+  degree: 180
+  order: 180
+  groops_file_list: data/fes2014b/FES2014b_001fileList.txt
+  data_dir: data/fes2014b
+
 ocean-pole-tide:
   ## Leave model name empty to not include effect
   ## Applicable Models: 'Desai02'
@@ -26,3 +34,22 @@ dealiasing:
   degree: 180
   order: 180
 
+atmospheric-tide:
+  ## Leave model name empty to not include effect
+  model: "AOD1B RL06"
+  degree: 180
+  order: 180
+  data_dir: data/aod1b_tides
+  tide_atlas_from_aod1b:
+    k1: AOD1B_ATM_K1_06.asc
+    m2: AOD1B_ATM_M2_06.asc
+    p1: AOD1B_ATM_P1_06.asc
+    r3: AOD1B_ATM_R3_06.asc
+    s2: AOD1B_ATM_S2_06.asc
+    t2: AOD1B_ATM_T2_06.asc
+    l2: AOD1B_ATM_L2_06.asc
+    n2: AOD1B_ATM_N2_06.asc
+    r2: AOD1B_ATM_R2_06.asc
+    s1: AOD1B_ATM_S1_06.asc
+    s3: AOD1B_ATM_S3_06.asc
+    t3: AOD1B_ATM_T3_06.asc

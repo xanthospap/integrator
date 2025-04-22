@@ -2,20 +2,20 @@
 #define __DSO_POD_INTEGRATION_PARAMETERS_HPP__
 
 #include "datetime/calendar.hpp"
-#include "iers/atmospheric_tides.hpp"
 #include "iers/aod1b_data_stream.hpp"
+#include "iers/atmospheric_tides.hpp"
 #include "iers/ocean_tide.hpp"
+#include "iers/planets.hpp"
 #include "iers/pole_tide.hpp"
 #include "iers/solid_earth_tide.hpp"
-#include "iers/planets.hpp"
 
 namespace dso {
 
 class IntegrationParameters {
   static constexpr const int PI_MAX_DEGREE = 200;
-  static constexpr const int PI_MAX_ORDER  = 200;
+  static constexpr const int PI_MAX_ORDER = 200;
 
-// private:
+  // private:
 public:
   /* TAI epoch */
   MjdEpoch mtai0;
@@ -24,17 +24,21 @@ public:
   /* Earth's gravity field */
   StokesCoeffs *mgrav;
   /* tidal phenomena ... */
-  SolidEarthTide  *mse_tide{nullptr};
-  OceanTide       *moc_tide{nullptr};
-  PoleTide        *mep_tide{nullptr};
-  OceanPoleTide   *mop_tide{nullptr};
+  SolidEarthTide *mse_tide{nullptr};
+  OceanTide *moc_tide{nullptr};
+  int moc_maxdegree{0};
+  int moc_maxorder{0};
+  PoleTide *mep_tide{nullptr};
+  OceanPoleTide *mop_tide{nullptr};
   AtmosphericTide *mat_tide{nullptr};
+  int matm_maxdegree{0};
+  int matm_maxorder{0};
   /* dealiasing */
   Aod1bDataStream<AOD1BCoefficientType::GLO> *mdealias{nullptr};
   int mdealias_maxdegree{0};
   int mdealias_maxorder{0};
 
-  /* third body gravity 
+  /* third body gravity
    *                       | Bit Nr. | Default state
    * Bit sequence: Moon    | (0)     | 1
    *               Sun     | (1)     | 1
@@ -43,7 +47,7 @@ public:
    *               Mars    | (4)     | 0
    *               Jupiter | (5)     | 0
    *
-   * If you want a planet other than Moon/Sun to be included in the 
+   * If you want a planet other than Moon/Sun to be included in the
    * computation, toggle the relevant bit. E.g. to set Mars to `on`, use:
    * tbg |= (1 << 4); (in general: tbg |= (1 << Bit_Nr)
    * To check if a planet will be included:
@@ -55,9 +59,9 @@ public:
 
   /* allocate scratch space for computations */
   CoeffMatrix2D<MatrixStorageType::LwTriangularColWise> mW{PI_MAX_DEGREE + 3,
-                                                          PI_MAX_DEGREE + 3};
+                                                           PI_MAX_DEGREE + 3};
   CoeffMatrix2D<MatrixStorageType::LwTriangularColWise> mM{PI_MAX_DEGREE + 3,
-                                                          PI_MAX_DEGREE + 3};
+                                                           PI_MAX_DEGREE + 3};
 
 public:
   EopSeries *eops() noexcept { return meops; }
