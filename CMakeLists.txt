@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.11)
 
 project(
   orbit_integrator
@@ -11,6 +11,7 @@ project(
 find_package(datetime REQUIRED)
 find_package(iers REQUIRED)
 find_package(geodesy REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # Pass the library dependencies to subdirectories
 set(PROJECT_DEPENDENCIES iers geodesy datetime)
@@ -19,7 +20,6 @@ set(PROJECT_DEPENDENCIES iers geodesy datetime)
 option(BUILD_PROGS "Enable building of binaries" ON)
 if(BUILD_PROGS)
   find_package(sp3 REQUIRED)
-  find_package(yaml-cpp REQUIRED)
   find_library(CSPICE_LIB cspice REQUIRED)
 endif()
 

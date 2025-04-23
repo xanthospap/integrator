@@ -15,28 +15,21 @@ class IntegrationParameters {
   static constexpr const int PI_MAX_DEGREE = 200;
   static constexpr const int PI_MAX_ORDER = 200;
 
-  // private:
 public:
   /* TAI epoch */
   MjdEpoch mtai0;
   /* EOPs */
-  EopSeries *meops;
-  /* Earth's gravity field */
-  StokesCoeffs *mgrav;
+  EopSeries meops;
+  /* Earth's gravity field (Stokes) */
+  StokesCoeffs mgrav;
   /* tidal phenomena ... */
   SolidEarthTide *mse_tide{nullptr};
   OceanTide *moc_tide{nullptr};
-  int moc_maxdegree{0};
-  int moc_maxorder{0};
   PoleTide *mep_tide{nullptr};
   OceanPoleTide *mop_tide{nullptr};
   AtmosphericTide *mat_tide{nullptr};
-  int matm_maxdegree{0};
-  int matm_maxorder{0};
   /* dealiasing */
   Aod1bDataStream<AOD1BCoefficientType::GLO> *mdealias{nullptr};
-  int mdealias_maxdegree{0};
-  int mdealias_maxorder{0};
 
   /* third body gravity
    *                       | Bit Nr. | Default state
@@ -64,15 +57,67 @@ public:
                                                            PI_MAX_DEGREE + 3};
 
 public:
-  EopSeries *eops() noexcept { return meops; }
-  StokesCoeffs *grav() noexcept { return mgrav; }
+  /** @brief Constructor */
+  IntegrationParameters() noexcept {};
+
+  /** @brief No copy constructor */
+  IntegrationParameters(const IntegrationParameters &) = delete;
+
+  /** @brief No assignment operator */
+  IntegrationParameters &operator=(const IntegrationParameters &) = delete;
+
+  /** @brief Move constructor */
+  IntegrationParameters(IntegrationParameters &&other) noexcept
+      : mtai0(other.mtai0), meops(std::move(other.meops)),
+        mgrav(std::move(other.mgrav)), mse_tide(other.mse_tide),
+        moc_tide(other.moc_tide), mep_tide(other.mep_tide),
+        mop_tide(other.mop_tide), mat_tide(other.mat_tide), tbg(other.tbg),
+        mW(std::move(other.mW)), mM(std::move(other.mM)) {
+
+    other.mse_tide = nullptr;
+    other.moc_tide = nullptr;
+    other.mep_tide = nullptr;
+    other.mop_tide = nullptr;
+    other.mat_tide = nullptr;
+  }
+
+  /** @brief Move assignment operator */
+  IntegrationParameters &operator=(IntegrationParameters &&other) noexcept {
+    if (this != &other) {
+      mtai0 = other.mtai0;
+      meops = std::move(other.meops);
+      mgrav = std::move(other.mgrav);
+      mse_tide = other.mse_tide;
+      moc_tide = other.moc_tide;
+      mep_tide = other.mep_tide;
+      mop_tide = other.mop_tide;
+      mat_tide = other.mat_tide;
+      tbg = other.tbg;
+      mW = std::move(other.mW);
+      mM = std::move(other.mM);
+      other.mse_tide = nullptr;
+      other.moc_tide = nullptr;
+      other.mep_tide = nullptr;
+      other.mop_tide = nullptr;
+      other.mat_tide = nullptr;
+    }
+    return *this;
+  }
+
   CoeffMatrix2D<MatrixStorageType::LwTriangularColWise> &tw() noexcept {
     return mW;
   }
   CoeffMatrix2D<MatrixStorageType::LwTriangularColWise> &tm() noexcept {
     return mM;
   }
-  MjdEpoch t0() const noexcept { return mtai0; }
+
+  const MjdEpoch &t0() const noexcept { return mtai0; }
+  MjdEpoch &t0() noexcept { return mtai0; }
+
+  /** @brief Construct instance from a YAML configuration file. */
+  static IntegrationParameters from_config(const char *config_fn,
+                                           const MjdEpoch &tt_start,
+                                           const MjdEpoch &tt_stop);
 }; /* class IntegrationParameters */
 
 } /* namespace dso */

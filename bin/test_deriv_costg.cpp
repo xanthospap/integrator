@@ -66,7 +66,7 @@ int gcrf2ecef(const dso::MjdEpoch &tai, dso::EopSeries &eops,
 }
 
 int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
-          dso::IntegrationParameters *params,
+          const dso::IntegrationParameters *params,
           Eigen::Ref<Eigen::VectorXd> y) noexcept {
 
   /* current time in TAI */
@@ -87,7 +87,7 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   }
 
   /* Gravity field stokes coefficients */
-  auto stokes = *(params->grav());
+  auto stokes = params->grav();
   stokes.C(0, 0) = stokes.C(1, 0) = stokes.C(1, 1) = 0e0;
   stokes.S(1, 1) = 0e0;
 
@@ -263,9 +263,9 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   params->moc_tide->stokes_coeffs().S(1, 1) = 0e0;
   /* compute acceleration for given epoch/position (ITRF) */
   if (dso::sh2gradient_cunningham(params->moc_tide->stokes_coeffs(), r_ecef,
-                                  acc_ot, g, params->moc_maxdegree,
-                                  params->moc_maxorder, -1, -1, &(params->tw()),
-                                  &(params->tm()))) {
+                                  acc_ot, g, params->moc_tide->max_degree(),
+                                  params->moc_tide->max_order(), -1, -1,
+                                  &(params->tw()), &(params->tm()))) {
     fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 1;
   }
@@ -298,7 +298,7 @@ int main(int argc, char *argv[]) {
   }
 
   /* parse the yaml configuration file */
-  YAML::Node config = YAML::LoadFile(argv[1]);
+  // YAML::Node config = YAML::LoadFile(argv[1]);
 
   /* create an Sp3c instance */
   dso::Sp3c sp3(argv[2]);
@@ -321,124 +321,132 @@ int main(int argc, char *argv[]) {
     start_t = start_t.gps2tai();
   }
 
-  /* EOPs */
-  dso::EopSeries eop;
-  {
-    std::string tmp = config["eop"].as<std::string>();
-    auto t1 = start_t;
-    t1.add_seconds(dso::seconds(-86400));
-    auto t2 = start_t;
-    t2.add_seconds(dso::seconds(5 * 86400));
-    if (dso::parse_iers_C04(tmp.c_str(), dso::MjdEpoch(t1), dso::MjdEpoch(t2),
-                            eop)) {
-      fprintf(stderr, "ERROR Failed parsing eop file\n");
-      return 1;
-    }
-    eop.regularize();
-  }
+  auto t2 = start_t;
+  t2.add_seconds(dso::seconds(5 * 86400));
+  dso::IntegrationParameters params =
+      dso::IntegrationParameters::from_config(argv[1], start_t, t2);
 
-  /* load planetary ephemeris kernels */
-  std::string tmp = config["planetary-ephemeris"]["bsp"].as<std::string>();
-  dso::load_spice_kernel(tmp.c_str());
-  tmp = config["planetary-ephemeris"]["tls"].as<std::string>();
-  dso::load_spice_kernel(tmp.c_str());
+  ///* EOPs */
+  // dso::EopSeries eop;
+  //{
+  //   std::string tmp = config["eop"].as<std::string>();
+  //   auto t1 = start_t;
+  //   t1.add_seconds(dso::seconds(-86400));
+  //   auto t2 = start_t;
+  //   t2.add_seconds(dso::seconds(5 * 86400));
+  //   if (dso::parse_iers_C04(tmp.c_str(), dso::MjdEpoch(t1),
+  //   dso::MjdEpoch(t2),
+  //                           eop)) {
+  //     fprintf(stderr, "ERROR Failed parsing eop file\n");
+  //     return 1;
+  //   }
+  //   eop.regularize();
+  // }
 
-  /* Earth's gravity field */
-  dso::StokesCoeffs stokes;
-  {
-    tmp = config["gravity"]["model"].as<std::string>();
-    int DEGREE = config["gravity"]["degree"].as<int>();
-    int ORDER = config["gravity"]["order"].as<int>();
-    dso::Icgem icgem(tmp.c_str());
-    if (icgem.parse_data(DEGREE, ORDER, start_t, stokes)) {
-      fprintf(stderr, "ERROR Failed reading gravity model!\n");
-      return 1;
-    }
-    /* checks */
-    assert(stokes.max_degree() == DEGREE);
-    assert(stokes.max_order() == ORDER);
-  }
+  ///* load planetary ephemeris kernels */
+  // std::string tmp = config["planetary-ephemeris"]["bsp"].as<std::string>();
+  // dso::load_spice_kernel(tmp.c_str());
+  // tmp = config["planetary-ephemeris"]["tls"].as<std::string>();
+  // dso::load_spice_kernel(tmp.c_str());
 
-  /* Solid Earth Tides */
-  dso::SolidEarthTide setide(iers2010::GMe, iers2010::Re, GM_Sun, GM_Moon);
+  ///* Earth's gravity field */
+  // dso::StokesCoeffs stokes;
+  //{
+  //   tmp = config["gravity"]["model"].as<std::string>();
+  //   int DEGREE = config["gravity"]["degree"].as<int>();
+  //   int ORDER = config["gravity"]["order"].as<int>();
+  //   dso::Icgem icgem(tmp.c_str());
+  //   if (icgem.parse_data(DEGREE, ORDER, start_t, stokes)) {
+  //     fprintf(stderr, "ERROR Failed reading gravity model!\n");
+  //     return 1;
+  //   }
+  //   /* checks */
+  //   assert(stokes.max_degree() == DEGREE);
+  //   assert(stokes.max_order() == ORDER);
+  // }
 
-  /* Solid Earth Pole Tide */
-  // no need to initialize, will use the static function:
-  // PoleTide::stokes_coeffs
+  ///* Solid Earth Tides */
+  // dso::SolidEarthTide setide(iers2010::GMe, iers2010::Re, GM_Sun, GM_Moon);
 
-  /* Ocean Pole Tide */
-  tmp = config["ocean-pole-tide"]["model"].as<std::string>();
-  dso::OceanPoleTide *opt = nullptr;
-  if (tmp == "Desai02") {
-    int DEGREE = config["ocean-pole-tide"]["degree"].as<int>();
-    int ORDER = config["ocean-pole-tide"]["order"].as<int>();
-    tmp = config["ocean-pole-tide"]["coeffs"].as<std::string>();
-    opt = new dso::OceanPoleTide(DEGREE, ORDER, tmp.c_str());
-  }
+  ///* Solid Earth Pole Tide */
+  //// no need to initialize, will use the static function:
+  //// PoleTide::stokes_coeffs
 
-  /* Dealiasing */
-  tmp = config["dealiasing"]["model"].as<std::string>();
-  dso::Aod1bDataStream<dso::AOD1BCoefficientType::GLO> *dap = nullptr;
-  if (tmp != "") {
-    const auto f = config["dealiasing"]["data-file"].as<std::string>();
-    const auto d = config["dealiasing"]["data-dir"].as<std::string>();
-    dap = new dso::Aod1bDataStream<dso::AOD1BCoefficientType::GLO>(f.c_str(),
-                                                                   d.c_str());
-    dap->initialize();
-  }
+  ///* Ocean Pole Tide */
+  // tmp = config["ocean-pole-tide"]["model"].as<std::string>();
+  // dso::OceanPoleTide *opt = nullptr;
+  // if (tmp == "Desai02") {
+  //   int DEGREE = config["ocean-pole-tide"]["degree"].as<int>();
+  //   int ORDER = config["ocean-pole-tide"]["order"].as<int>();
+  //   tmp = config["ocean-pole-tide"]["coeffs"].as<std::string>();
+  //   opt = new dso::OceanPoleTide(DEGREE, ORDER, tmp.c_str());
+  // }
 
-  /* Atmospheric Tide */
-  tmp = config["atmospheric-tide"]["model"].as<std::string>();
-  dso::AtmosphericTide atm;
-  if (tmp == "AOD1B RL06") {
-    int DEGREE = config["atmospheric-tide"]["degree"].as<int>();
-    int ORDER = config["atmospheric-tide"]["order"].as<int>();
-    std::string data_dir =
-        config["atmospheric-tide"]["data_dir"].as<std::string>();
-    YAML::Node tide_atlas = config["atmospheric-tide"]["tide_atlas_from_aod1b"];
-    for (YAML::const_iterator it = tide_atlas.begin(); it != tide_atlas.end();
-         ++it) {
-      std::string filename = it->second.as<std::string>();
-      std::string full_path = data_dir + "/" + filename;
-      atm.append_wave(full_path.c_str(), DEGREE, ORDER);
-    }
-  }
+  ///* Dealiasing */
+  // tmp = config["dealiasing"]["model"].as<std::string>();
+  // dso::Aod1bDataStream<dso::AOD1BCoefficientType::GLO> *dap = nullptr;
+  // if (tmp != "") {
+  //   const auto f = config["dealiasing"]["data-file"].as<std::string>();
+  //   const auto d = config["dealiasing"]["data-dir"].as<std::string>();
+  //   dap = new dso::Aod1bDataStream<dso::AOD1BCoefficientType::GLO>(f.c_str(),
+  //                                                                  d.c_str());
+  //   dap->initialize();
+  // }
 
-  /* Ocean Tide */
-  tmp = config["ocean-tide"]["model"].as<std::string>();
-  dso::OceanTide *ot = nullptr;
-  {
-    int DEGREE = config["ocean-tide"]["degree"].as<int>();
-    int ORDER = config["ocean-tide"]["order"].as<int>();
-    std::string data_dir = config["ocean-tide"]["data_dir"].as<std::string>();
-    std::string groops_file_list =
-        config["ocean-tide"]["groops_file_list"].as<std::string>();
-    ot = new dso::OceanTide(dso::groops_ocean_atlas(
-        groops_file_list.c_str(), data_dir.c_str(), DEGREE, ORDER));
-  }
+  ///* Atmospheric Tide */
+  // tmp = config["atmospheric-tide"]["model"].as<std::string>();
+  // dso::AtmosphericTide atm;
+  // if (tmp == "AOD1B RL06") {
+  //   int DEGREE = config["atmospheric-tide"]["degree"].as<int>();
+  //   int ORDER = config["atmospheric-tide"]["order"].as<int>();
+  //   std::string data_dir =
+  //       config["atmospheric-tide"]["data_dir"].as<std::string>();
+  //   YAML::Node tide_atlas =
+  //   config["atmospheric-tide"]["tide_atlas_from_aod1b"]; for
+  //   (YAML::const_iterator it = tide_atlas.begin(); it != tide_atlas.end();
+  //        ++it) {
+  //     std::string filename = it->second.as<std::string>();
+  //     std::string full_path = data_dir + "/" + filename;
+  //     atm.append_wave(full_path.c_str(), DEGREE, ORDER);
+  //   }
+  // }
 
-  /* setup integration parameters */
-  dso::IntegrationParameters params;
-  params.meops = &eop;
-  params.mgrav = &stokes;
-  params.mse_tide = &setide;
+  ///* Ocean Tide */
+  // tmp = config["ocean-tide"]["model"].as<std::string>();
+  // dso::OceanTide *ot = nullptr;
+  //{
+  //   int DEGREE = config["ocean-tide"]["degree"].as<int>();
+  //   int ORDER = config["ocean-tide"]["order"].as<int>();
+  //   std::string data_dir =
+  //   config["ocean-tide"]["data_dir"].as<std::string>(); std::string
+  //   groops_file_list =
+  //       config["ocean-tide"]["groops_file_list"].as<std::string>();
+  //   ot = new dso::OceanTide(dso::groops_ocean_atlas(
+  //       groops_file_list.c_str(), data_dir.c_str(), DEGREE, ORDER));
+  // }
+
+  ///* setup integration parameters */
+  // dso::IntegrationParameters params;
+  // params.meops = &eop;
+  // params.mgrav = &stokes;
+  // params.mse_tide = &setide;
   params.mtai0 = dso::MjdEpoch(start_t);
-  params.mop_tide = opt;
-  params.mdealias = dap;
-  if (params.mdealias) {
-    params.mdealias_maxdegree = config["dealiasing"]["degree"].as<int>();
-    params.mdealias_maxorder = config["dealiasing"]["order"].as<int>();
-  }
-  params.mat_tide = &atm;
-  if (params.mat_tide) {
-    params.matm_maxdegree = config["atmospheric-tide"]["degree"].as<int>();
-    params.matm_maxorder = config["atmospheric-tide"]["order"].as<int>();
-  }
-  params.moc_tide = ot;
-  if (params.moc_tide) {
-    params.moc_maxdegree = config["ocean-tide"]["degree"].as<int>();
-    params.moc_maxorder = config["ocean-tide"]["order"].as<int>();
-  }
+  // params.mop_tide = opt;
+  // params.mdealias = dap;
+  // if (params.mdealias) {
+  //   params.mdealias_maxdegree = config["dealiasing"]["degree"].as<int>();
+  //   params.mdealias_maxorder = config["dealiasing"]["order"].as<int>();
+  // }
+  // params.mat_tide = &atm;
+  // if (params.mat_tide) {
+  //   params.matm_maxdegree = config["atmospheric-tide"]["degree"].as<int>();
+  //   params.matm_maxorder = config["atmospheric-tide"]["order"].as<int>();
+  // }
+  // params.moc_tide = ot;
+  // if (params.moc_tide) {
+  //   params.moc_maxdegree = config["ocean-tide"]["degree"].as<int>();
+  //   params.moc_maxorder = config["ocean-tide"]["order"].as<int>();
+  // }
 
   /* setup the integrator */
   // dso::Dop853 dop853(deriv, 6, &params, 1e-9, 1e-12);
