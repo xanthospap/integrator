@@ -1,7 +1,7 @@
 # bin/CMakeLists.txt
 
 set(BIN_SOURCES
-  equations_of_motion.cpp
+  #equations_of_motion.cpp
   test_deriv_costg.cpp
 )
 

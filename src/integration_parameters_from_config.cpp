@@ -1,5 +1,10 @@
+#include "iers/icgemio.hpp"
 #include "integration_parameters.hpp"
 #include "yaml-cpp/yaml.h"
+
+bool is_nonempty_string(const YAML::Node &node) {
+  return node.IsDefined() && node.IsScalar() && !node.as<std::string>().empty();
+}
 
 dso::IntegrationParameters
 dso::IntegrationParameters::from_config(const char *fn,
@@ -22,16 +27,14 @@ dso::IntegrationParameters::from_config(const char *fn,
   auto dsec =
       tt_stop.diff<dso::DateTimeDifferenceType::FractionalSeconds>(tt_start)
           .seconds();
-  auto tt_midepoch = tt_start;
-  tt_midepoch.add_seconds(dso::FractionalSeconds(dsec / 2.));
+  const auto tt_midepoch =
+      tt_start.add_seconds(dso::FractionalSeconds(dsec / 2.));
 
   /* fill EOP Series of the IntegrationParameters instance */
   {
     std::string tmp = config["eop"].as<std::string>();
-    auto t1 = tt_start;
-    t1.add_seconds(dso::seconds(-86400));
-    auto t2 = tt_stop;
-    t2.add_seconds(dso::seconds(86400));
+    const auto t1 = tt_start.add_seconds(dso::FractionalSeconds(-86400));
+    const auto t2 = tt_stop.add_seconds(dso::FractionalSeconds(86400));
     if (dso::parse_iers_C04(tmp.c_str(), dso::MjdEpoch(t1), dso::MjdEpoch(t2),
                             params.meops)) {
       std::string err_msg = "[ERROR] Failed parsing EOP file " + tmp +
@@ -53,7 +56,9 @@ dso::IntegrationParameters::from_config(const char *fn,
     int DEGREE = config["gravity"]["degree"].as<int>();
     int ORDER = config["gravity"]["order"].as<int>();
     dso::Icgem icgem(tmp.c_str());
-    if (icgem.parse_data(DEGREE, ORDER, tt_midepoch, params.mgrav)) {
+    if (icgem.parse_data(DEGREE, ORDER,
+                         dso::from_mjdepoch<dso::nanoseconds>(tt_midepoch),
+                         params.mgrav)) {
       std::string err_msg = "[ERROR] Failed parsing gravity field model " +
                             tmp + " (traceback:" + std::string(__func__) +
                             ")\n";
@@ -65,7 +70,7 @@ dso::IntegrationParameters::from_config(const char *fn,
   }
 
   /* Solid Earth Tides (all parameters are default initialized) */
-  if (config["solid-earth-tide"]["model"]) {
+  if (is_nonempty_string(config["solid-earth-tide"]["model"])) {
     tmp = config["solid-earth-tide"]["model"].as<std::string>();
     if (tmp == "IERS2010") {
       params.mse_tide = new dso::SolidEarthTide();
@@ -79,7 +84,7 @@ dso::IntegrationParameters::from_config(const char *fn,
 
   /* Ocean Tide (if model name is non-empty) */
   dso::OceanTide *ot = nullptr;
-  if (config["ocean-tide"]["model"]) {
+  if (is_nonempty_string(config["ocean-tide"]["model"])) {
     /* basic parameters, must exist */
     tmp = config["ocean-tide"]["model"].as<std::string>();
     int DEGREE = config["ocean-tide"]["degree"].as<int>();
@@ -88,12 +93,13 @@ dso::IntegrationParameters::from_config(const char *fn,
     std::string groops_file_list =
         config["ocean-tide"]["groops_file_list"].as<std::string>();
     /* OceanTide model with admittance */
-    if (config["ocean-tide"]["groops_doodson02_file"] &&
-        config["ocean-tide"]["groops_admittance03_file"]) {
+    if (is_nonempty_string(config["ocean-tide"]["groops_doodson02_file"]) &&
+        is_nonempty_string(config["ocean-tide"]["groops_admittance03_file"])) {
       std::string file02 =
           config["ocean-tide"]["groops_doodson02_file"].as<std::string>();
       std::string file03 =
           config["ocean-tide"]["groops_admittance03_file"].as<std::string>();
+
       try {
         ot = new dso::OceanTide(dso::groops_ocean_atlas(
             groops_file_list.c_str(), file02.c_str(), file03.c_str(),
@@ -127,7 +133,7 @@ dso::IntegrationParameters::from_config(const char *fn,
   params.moc_tide = ot;
 
   /* Solid Earth Pole Tide */
-  if (config["solid-earth-pole-tide"]["model"]) {
+  if (is_nonempty_string(config["solid-earth-pole-tide"]["model"])) {
     tmp = config["solid-earth-pole-tide"]["model"].as<std::string>();
     if (tmp == "IERS2010") {
       params.mep_tide = new dso::PoleTide();
@@ -141,31 +147,33 @@ dso::IntegrationParameters::from_config(const char *fn,
 
   /* Ocean Pole Tide (if model name is non-empty) */
   dso::OceanPoleTide *opt = nullptr;
-  if (config["ocean-pole-tide"]["model"]) {
-    tmp = config["ocean-pole-tide"]["model"].as<std::string>();
-    if (tmp == "Desai02") {
-      /* Desai 2002 model, need degree, order and coeffs */
-      int DEGREE = config["ocean-pole-tide"]["degree"].as<int>();
-      int ORDER = config["ocean-pole-tide"]["order"].as<int>();
-      std::string fn = config["ocean-pole-tide"]["coeffs"].as<std::string>();
-      opt = new dso::OceanPoleTide(DEGREE, ORDER, fn.c_str());
-    } else {
-      std::string err_msg = "[ERROR] Unknown Ocean Pole Tide model given " +
-                            tmp + " (traceback:" + std::string(__func__) +
-                            ")\n";
-      throw std::runtime_error(err_msg);
+  {
+    if (is_nonempty_string(config["ocean-pole-tide"]["model"])) {
+      tmp = config["ocean-pole-tide"]["model"].as<std::string>();
+      if (tmp == "Desai02") {
+        /* Desai 2002 model, need degree, order and coeffs */
+        int DEGREE = config["ocean-pole-tide"]["degree"].as<int>();
+        int ORDER = config["ocean-pole-tide"]["order"].as<int>();
+        std::string tfn = config["ocean-pole-tide"]["coeffs"].as<std::string>();
+        opt = new dso::OceanPoleTide(DEGREE, ORDER, tfn.c_str());
+      } else {
+        std::string err_msg = "[ERROR] Unknown Ocean Pole Tide model given " +
+                              tmp + " (traceback:" + std::string(__func__) +
+                              ")\n";
+        throw std::runtime_error(err_msg);
+      }
     }
   }
   params.mop_tide = opt;
 
   /* Atmospheric Tide (if model name is non-empty) */
   dso::AtmosphericTide *atm = nullptr;
-  if (config["atmospheric-tide"]["model"]) {
+  if (is_nonempty_string(config["atmospheric-tide"]["model"])) {
     int DEGREE = config["atmospheric-tide"]["degree"].as<int>();
     int ORDER = config["atmospheric-tide"]["order"].as<int>();
     std::string data_dir =
         config["atmospheric-tide"]["data_dir"].as<std::string>();
-    if (config["atmospheric-tide"]["groops_file_list"]) {
+    if (is_nonempty_string(config["atmospheric-tide"]["groops_file_list"])) {
       /* generating an AtmosphericTide instance from GROOPS files */
       std::string fn1 =
           config["atmospheric-tide"]["groops_file_list"].as<std::string>();
@@ -204,7 +212,7 @@ dso::IntegrationParameters::from_config(const char *fn,
 
   /* Dealiasing (if model name is non-empty) */
   dso::Aod1bDataStream<dso::AOD1BCoefficientType::GLO> *dap = nullptr;
-  if (config["dealiasing"]["model"]) {
+  if (is_nonempty_string(config["dealiasing"]["model"])) {
     // tmp = config["dealiasing"]["model"].as<std::string>();
     const auto f = config["dealiasing"]["data-file"].as<std::string>();
     const auto d = config["dealiasing"]["data-dir"].as<std::string>();

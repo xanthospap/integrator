@@ -66,12 +66,11 @@ int gcrf2ecef(const dso::MjdEpoch &tai, dso::EopSeries &eops,
 }
 
 int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
-          const dso::IntegrationParameters *params,
+          dso::IntegrationParameters *params,
           Eigen::Ref<Eigen::VectorXd> y) noexcept {
 
   /* current time in TAI */
-  dso::MjdEpoch t = params->t0();
-  t.add_seconds(dso::FractionalSeconds(tsec));
+  dso::MjdEpoch t = params->t0().add_seconds(dso::FractionalSeconds(tsec));
 
   /* current time in GPST (debugging) */
   const auto tgps = t.tai2gps();
@@ -82,18 +81,21 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   /* Celestial to Terrestrial Matrix */
   dso::EopRecord eopr;
   Eigen::Matrix<double, 3, 3> R, dRdt;
-  if (gcrf2ecef(dso::MjdEpoch(t), *(params->eops()), R, dRdt, fargs, eopr)) {
+  if (gcrf2ecef(dso::MjdEpoch(t), params->eops(), R, dRdt, fargs, eopr)) {
     return 8;
   }
 
+  /* satellite position in ECEF */
+  const Eigen::VectorXd r_ecef = R * y0.segment<3>(0);
+
   /* Gravity field stokes coefficients */
-  auto stokes = params->grav();
-  stokes.C(0, 0) = stokes.C(1, 0) = stokes.C(1, 1) = 0e0;
+  dso::StokesCoeffs stokes(params->earth_gravity());
+  stokes.C(0, 0) = 0e0;
+  stokes.C(1, 0) = stokes.C(1, 1) = 0e0;
   stokes.S(1, 1) = 0e0;
 
   /* compute acceleration for given epoch/position (ECEF) */
   [[maybe_unused]] Eigen::Matrix<double, 3, 3> g;
-  const Eigen::VectorXd r_ecef = R * y0.segment<3>(0);
   Eigen::Matrix<double, 3, 1> acc_grav;
   if (dso::sh2gradient_cunningham(stokes, r_ecef, acc_grav, g,
                                   stokes.max_degree(), stokes.max_order(), -1,
@@ -142,12 +144,12 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
 
   /* Solid Earth Tide (ITRF) */
   Eigen::Matrix<double, 3, 1> acc_set;
-  params->mse_tide->stokes_coeffs(t.tai2tt(), t.tai2ut1(eopr.dut()),
-                                  R * rtb_moon, R * rtb_sun.segment<3>(0),
-                                  fargs);
-  if (dso::sh2gradient_cunningham(params->mse_tide->stokes_coeffs(), r_ecef,
-                                  acc_set, g, -1, -1, -1, -1, &(params->tw()),
-                                  &(params->tm()))) {
+  params->solid_earth_tide()->stokes_coeffs(t.tai2tt(), t.tai2ut1(eopr.dut()),
+                                            R * rtb_moon,
+                                            R * rtb_sun.segment<3>(0), fargs);
+  if (dso::sh2gradient_cunningham(params->solid_earth_tide()->stokes_coeffs(),
+                                  r_ecef, acc_set, g, -1, -1, -1, -1,
+                                  &(params->tw()), &(params->tm()))) {
     fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 1;
   }
@@ -180,20 +182,22 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
 
   /* Ocean Pole Tide */
   Eigen::Matrix<double, 3, 1> acc_otp;
-  if (params->mop_tide->stokes_coeffs(t.tai2tt(), eopr.xp(), eopr.yp(),
-                                      params->mop_tide->max_degree(),
-                                      params->mop_tide->max_order())) {
+  if (params->ocean_pole_tide()->stokes_coeffs(
+          t.tai2tt(), eopr.xp(), eopr.yp(),
+          params->ocean_pole_tide()->max_degree(),
+          params->ocean_pole_tide()->max_order())) {
     fprintf(stderr, "ERROR Failed computing Stokes Coefficients\n");
     return 1;
   }
-  params->mop_tide->stokes_coeffs().C(0, 0) =
-      params->mop_tide->stokes_coeffs().C(1, 0) =
-          params->mop_tide->stokes_coeffs().C(1, 1) = 0e0;
-  params->mop_tide->stokes_coeffs().S(1, 1) = 0e0;
-  if (dso::sh2gradient_cunningham(params->mop_tide->stokes_coeffs(), r_ecef,
-                                  acc_otp, g, params->mop_tide->max_degree(),
-                                  params->mop_tide->max_order(), -1, -1,
-                                  &(params->tw()), &(params->tm()))) {
+  params->ocean_pole_tide()->stokes_coeffs().C(0, 0) =
+      params->ocean_pole_tide()->stokes_coeffs().C(1, 0) =
+          params->ocean_pole_tide()->stokes_coeffs().C(1, 1) = 0e0;
+  params->ocean_pole_tide()->stokes_coeffs().S(1, 1) = 0e0;
+  if (dso::sh2gradient_cunningham(params->ocean_pole_tide()->stokes_coeffs(),
+                                  r_ecef, acc_otp, g,
+                                  params->ocean_pole_tide()->max_degree(),
+                                  params->ocean_pole_tide()->max_order(), -1,
+                                  -1, &(params->tw()), &(params->tm()))) {
     fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 1;
   }
@@ -204,20 +208,21 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
     y.segment<3>(0) += acc;
   }
 
-  /* Dealiasing */
+  /* Dealiasing
+   * WARNING !!
+   * Here, we are storing the Stokes coefficients in stokes (created earlier).
+   */
   Eigen::Matrix<double, 3, 1> acc_das;
-  if (params->mdealias->coefficients_at(
+  if (params->dealias()->coefficients_at(
           dso::from_mjdepoch<dso::nanoseconds>(t.tai2tt()), stokes)) {
     fprintf(stderr, "Failed interpolating dealiasing coefficients\n");
     return 1;
   }
-  stokes.C(0, 0) = 0e0;
-  stokes.C(1, 0) = stokes.C(1, 1) = 0e0;
+  stokes.C(0, 0) = stokes.C(1, 0) = stokes.C(1, 1) = 0e0;
   stokes.S(1, 1) = 0e0;
   if (dso::sh2gradient_cunningham(stokes, r_ecef, acc_das, g,
-                                  params->mdealias_maxdegree,
-                                  params->mdealias_maxorder, -1, -1,
-                                  &(params->tw()), &(params->tm()))) {
+                                  stokes.max_degree(), stokes.max_order(), -1,
+                                  -1, &(params->tw()), &(params->tm()))) {
     fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 1;
   }
@@ -231,17 +236,19 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   /* Atmospheric Tide */
   Eigen::Matrix<double, 3, 1> acc_atm;
   /* compute Stokes coeffs (for atm. tides) */
-  params->mat_tide->stokes_coeffs(t.tai2tt(), t.tai2ut1(eopr.dut()), fargs);
+  params->atmospheric_tide()->stokes_coeffs(t.tai2tt(), t.tai2ut1(eopr.dut()),
+                                            fargs);
   /* for the test, degree one coefficients are not taken into account */
-  params->mat_tide->stokes_coeffs().C(0, 0) =
-      params->mat_tide->stokes_coeffs().C(1, 0) =
-          params->mat_tide->stokes_coeffs().C(1, 1) = 0e0;
-  params->mat_tide->stokes_coeffs().S(1, 1) = 0e0;
+  params->atmospheric_tide()->stokes_coeffs().C(0, 0) =
+      params->atmospheric_tide()->stokes_coeffs().C(1, 0) =
+          params->atmospheric_tide()->stokes_coeffs().C(1, 1) = 0e0;
+  params->atmospheric_tide()->stokes_coeffs().S(1, 1) = 0e0;
   /* compute acceleration for given epoch/position (ITRF) */
-  if (dso::sh2gradient_cunningham(params->mat_tide->stokes_coeffs(), r_ecef,
-                                  acc_atm, g, params->matm_maxdegree,
-                                  params->matm_maxorder, -1, -1,
-                                  &(params->tw()), &(params->tm()))) {
+  if (dso::sh2gradient_cunningham(params->atmospheric_tide()->stokes_coeffs(),
+                                  r_ecef, acc_atm, g,
+                                  params->atmospheric_tide()->max_degree(),
+                                  params->atmospheric_tide()->max_order(), -1,
+                                  -1, &(params->tw()), &(params->tm()))) {
     fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 1;
   }
@@ -255,16 +262,16 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   /* Ocean Tide */
   Eigen::Matrix<double, 3, 1> acc_ot;
   /* compute Stokes coeffs (for ocean tides) */
-  params->moc_tide->stokes_coeffs(t.tai2tt(), t.tai2ut1(eopr.dut()), fargs);
+  params->ocean_tide()->stokes_coeffs(t.tai2tt(), t.tai2ut1(eopr.dut()), fargs);
   /* for the test, degree one coefficients are not taken into account */
-  params->moc_tide->stokes_coeffs().C(0, 0) =
-      params->moc_tide->stokes_coeffs().C(1, 0) =
-          params->moc_tide->stokes_coeffs().C(1, 1) = 0e0;
-  params->moc_tide->stokes_coeffs().S(1, 1) = 0e0;
+  params->ocean_tide()->stokes_coeffs().C(0, 0) =
+      params->ocean_tide()->stokes_coeffs().C(1, 0) =
+          params->ocean_tide()->stokes_coeffs().C(1, 1) = 0e0;
+  params->ocean_tide()->stokes_coeffs().S(1, 1) = 0e0;
   /* compute acceleration for given epoch/position (ITRF) */
-  if (dso::sh2gradient_cunningham(params->moc_tide->stokes_coeffs(), r_ecef,
-                                  acc_ot, g, params->moc_tide->max_degree(),
-                                  params->moc_tide->max_order(), -1, -1,
+  if (dso::sh2gradient_cunningham(params->ocean_tide()->stokes_coeffs(), r_ecef,
+                                  acc_ot, g, params->ocean_tide()->max_degree(),
+                                  params->ocean_tide()->max_order(), -1, -1,
                                   &(params->tw()), &(params->tm()))) {
     fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 1;
@@ -315,16 +322,15 @@ int main(int argc, char *argv[]) {
     sv = dso::sp3::SatelliteId{argv[3]};
   }
 
-  /* get starting epoch in TAI */
+  /* get starting epoch in TT */
   auto start_t = sp3.start_epoch();
   if (!std::strcmp(sp3.time_sys(), "GPS")) {
     start_t = start_t.gps2tai();
   }
 
-  auto t2 = start_t;
-  t2.add_seconds(dso::seconds(5 * 86400));
-  dso::IntegrationParameters params =
-      dso::IntegrationParameters::from_config(argv[1], start_t, t2);
+  auto t2 = start_t.add_seconds(dso::seconds(5 * 86400));
+  dso::IntegrationParameters params = dso::IntegrationParameters::from_config(
+      argv[1], dso::MjdEpoch(start_t), dso::MjdEpoch(t2));
 
   ///* EOPs */
   // dso::EopSeries eop;
@@ -476,7 +482,8 @@ int main(int argc, char *argv[]) {
       block_tai = block_tai.gps2tai();
     }
     /* GCRF to ITRF rotation matrix */
-    if (gcrf2ecef(dso::MjdEpoch(block_tai), eop, R, dRdt, fargs, eopr)) {
+    if (gcrf2ecef(dso::MjdEpoch(block_tai), params.eops(), R, dRdt, fargs,
+                  eopr)) {
       return 8;
     }
     /* get state for current epoch ITRF */

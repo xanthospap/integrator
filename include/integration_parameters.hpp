@@ -113,6 +113,26 @@ public:
 
   const MjdEpoch &t0() const noexcept { return mtai0; }
   MjdEpoch &t0() noexcept { return mtai0; }
+  const EopSeries &eops() const noexcept { return meops; }
+  EopSeries &eops() noexcept { return meops; }
+  const StokesCoeffs &earth_gravity() const noexcept { return mgrav; }
+  StokesCoeffs &earth_gravity() noexcept { return mgrav; }
+  const SolidEarthTide *solid_earth_tide() const noexcept { return mse_tide; }
+  SolidEarthTide *solid_earth_tide() noexcept { return mse_tide; }
+  const OceanTide *ocean_tide() const noexcept { return moc_tide; }
+  OceanTide *ocean_tide() noexcept { return moc_tide; }
+  const PoleTide *pole_tide() const noexcept { return mep_tide; }
+  PoleTide *pole_tide() noexcept { return mep_tide; }
+  const OceanPoleTide *ocean_pole_tide() const noexcept { return mop_tide; }
+  OceanPoleTide *ocean_pole_tide() noexcept { return mop_tide; }
+  const AtmosphericTide *atmospheric_tide() const noexcept { return mat_tide; }
+  AtmosphericTide *atmospheric_tide() noexcept { return mat_tide; }
+  const Aod1bDataStream<AOD1BCoefficientType::GLO> *dealias() const noexcept {
+    return mdealias;
+  }
+  Aod1bDataStream<AOD1BCoefficientType::GLO> *dealias() noexcept {
+    return mdealias;
+  }
 
   /** @brief Construct instance from a YAML configuration file. */
   static IntegrationParameters from_config(const char *config_fn,

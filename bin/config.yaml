@@ -7,7 +7,7 @@ planetary-ephemeris:
 
 gravity:
   # Filename of gravity field model in ICGEM/gfc format
-  model: data/EIGEN-GRGS.RL04.MEAN-FIELD.gfc
+  model: data/EIGEN6-C4.gfc
   degree: 180
   order: 180
 
