@@ -16,17 +16,20 @@
 constexpr const double GM_Moon = /*0.49028010560e13;*/ 4902.800076e9;
 constexpr const double GM_Sun = /*1.32712442076e20;*/ 132712440040.944e9;
 
-/* Compute and return thr rotation matrix and its derivative between GCRF and
+/* Compute and return the rotation matrix and its derivative between GCRF and
  * ECEF frames.
  */
-int gcrf2ecef(const dso::MjdEpoch &tai, dso::EopSeries &eops,
-              Eigen::Matrix<double, 3, 3> &R, Eigen::Matrix<double, 3, 3> &dRdt,
-              double *fargs, dso::EopRecord &eopr) noexcept {
-  const auto tt = tai.tai2tt();
-  double X, Y;
+int prep_c2i(const dso::MjdEpoch &tai, dso::EopSeries &eops,
+             Eigen::Quaterniond &q_c2tirs, Eigen::Quaterniond &q_tirs2i,
+             double *fargs, dso::EopRecord &eopr) noexcept {
 
-  /* compute (X, Y)_{cip} and (14) fundamental arguments */
-  dso::xycip06a(tt, X, Y, fargs);
+  const auto tt = tai.tai2tt();
+
+  /* compute (X,Y) CIP and fundamental arguments (we are doing this here
+   * to compute fargs).
+   */
+  double Xcip, Ycip;
+  dso::xycip06a(tt, Xcip, Ycip, fargs);
 
   /* get (interpolate EOPs) */
   if (dso::EopSeries::out_of_bounds(eops.interpolate(tt, eopr))) {
@@ -59,9 +62,31 @@ int gcrf2ecef(const dso::MjdEpoch &tai, dso::EopSeries &eops,
     eopr.lod() += dlod * 1e-6;
   }
 
-  R = dso::detail::gcrs2itrs(
-      dso::era00(tt.tt2ut1(eopr.dut())), dso::s06(tt, X, Y), dso::sp00(tt), X,
-      Y, dso::sec2rad(eopr.xp()), dso::sec2rad(eopr.yp()), eopr.lod(), dRdt);
+  /* de-regularize */
+  {
+    double ut1_cor;
+    double lod_cor;
+    double omega_cor;
+    dso::deop_zonal_tide(fargs, ut1_cor, lod_cor, omega_cor);
+    /* apply (note: microseconds to seconds) */
+    eopr.dut() += (ut1_cor * 1e-6);
+    eopr.lod() += (lod_cor * 1e-6);
+  }
+
+  /* use fundamental arguments to compute s */
+  const double s = dso::s06(tt, Xcip, Ycip, fargs);
+  /* apply CIP corrections */
+  Xcip += dso::sec2rad(eopr.dX());
+  Ycip += dso::sec2rad(eopr.dY());
+  /* spherical crd for CIP */
+  double d, e;
+  dso::detail::xycip2spherical(Xcip, Ycip, d, e);
+  const double era = dso::era00(tt.tt2ut1(eopr.dut()));
+
+  q_c2tirs = dso::detail::c2tirs(era, s, d, e);
+  q_tirs2i = dso::detail::tirs2i(dso::sec2rad(eopr.xp()),
+                                 dso::sec2rad(eopr.yp()), dso::sp00(tt));
+
   return 0;
 }
 
@@ -80,13 +105,11 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
 
   /* Celestial to Terrestrial Matrix */
   dso::EopRecord eopr;
-  Eigen::Matrix<double, 3, 3> R, dRdt;
-  if (gcrf2ecef(dso::MjdEpoch(t), params->eops(), R, dRdt, fargs, eopr)) {
-    return 8;
-  }
+  Eigen::Quaterniond q_c2tirs, q_tirs2i;
+  prep_c2i(dso::MjdEpoch(t), params->eops(), q_c2tirs, q_tirs2i, fargs, eopr);
 
   /* satellite position in ECEF */
-  const Eigen::VectorXd r_ecef = R * y0.segment<3>(0);
+  const Eigen::VectorXd r_ecef = q_tirs2i * (q_c2tirs * y0.segment<3>(0));
 
   /* Gravity field stokes coefficients */
   dso::StokesCoeffs stokes(params->earth_gravity());
@@ -105,7 +128,7 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   }
   {
     /* print acceleration in ECI (P1)*/
-    const auto acc = R.transpose() * acc_grav;
+    const auto acc = q_c2tirs.conjugate() * (q_tirs2i.conjugate() * acc_grav);
     printf("%.15f %.15f %.15f %.15f", tgps.as_mjd(), acc(0), acc(1), acc(2));
     y.segment<3>(0) += acc;
   }
@@ -144,9 +167,9 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
 
   /* Solid Earth Tide (ITRF) */
   Eigen::Matrix<double, 3, 1> acc_set;
-  params->solid_earth_tide()->stokes_coeffs(t.tai2tt(), t.tai2ut1(eopr.dut()),
-                                            R * rtb_moon,
-                                            R * rtb_sun.segment<3>(0), fargs);
+  params->solid_earth_tide()->stokes_coeffs(
+      t.tai2tt(), t.tai2ut1(eopr.dut()), q_tirs2i * (q_c2tirs * rtb_moon),
+      q_tirs2i * (q_c2tirs * rtb_sun.segment<3>(0)), fargs);
   if (dso::sh2gradient_cunningham(params->solid_earth_tide()->stokes_coeffs(),
                                   r_ecef, acc_set, g, -1, -1, -1, -1,
                                   &(params->tw()), &(params->tm()))) {
@@ -155,7 +178,8 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   }
   {
     /* print acceleration in ECI (P5)*/
-    const auto acc = R.transpose() * acc_set;
+    // const auto acc = R.transpose() * acc_set;
+    const auto acc = q_c2tirs.conjugate() * (q_tirs2i.conjugate() * acc_set);
     printf(" %.15f %.15f %.15f", acc(0), acc(1), acc(2));
     y.segment<3>(0) += acc;
   }
@@ -175,7 +199,8 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   }
   {
     /* print acceleration in ECI (P6)*/
-    const auto acc = R.transpose() * acc_setp;
+    // const auto acc = R.transpose() * acc_setp;
+    const auto acc = q_c2tirs.conjugate() * (q_tirs2i.conjugate() * acc_setp);
     printf(" %.15f %.15f %.15f", acc(0), acc(1), acc(2));
     y.segment<3>(0) += acc;
   }
@@ -202,7 +227,8 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
     return 1;
   }
   {
-    const auto acc = R.transpose() * acc_otp;
+    // const auto acc = R.transpose() * acc_otp;
+    const auto acc = q_c2tirs.conjugate() * (q_tirs2i.conjugate() * acc_otp);
     /* print acceleration in ECI (P7)*/
     printf(" %.15f %.15f %.15f", acc(0), acc(1), acc(2));
     y.segment<3>(0) += acc;
@@ -228,7 +254,8 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   }
   {
     /* print acceleration in ECI (P8)*/
-    const auto acc = R.transpose() * acc_das;
+    // const auto acc = R.transpose() * acc_das;
+    const auto acc = q_c2tirs.conjugate() * (q_tirs2i.conjugate() * acc_das);
     printf(" %.15f %.15f %.15f", acc(0), acc(1), acc(2));
     y.segment<3>(0) += acc;
   }
@@ -254,7 +281,8 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   }
   {
     /* print acceleration in ECI (P9)*/
-    const auto acc = R.transpose() * acc_atm;
+    // const auto acc = R.transpose() * acc_atm;
+    const auto acc = q_c2tirs.conjugate() * (q_tirs2i.conjugate() * acc_atm);
     printf(" %.15f %.15f %.15f", acc(0), acc(1), acc(2));
     y.segment<3>(0) += acc;
   }
@@ -278,7 +306,8 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   }
   {
     /* print acceleration in ECI (P10)*/
-    const auto acc = R.transpose() * acc_ot;
+    // const auto acc = R.transpose() * acc_ot;
+    const auto acc = q_c2tirs.conjugate() * (q_tirs2i.conjugate() * acc_ot);
     printf(" %.15f %.15f %.15f", acc(0), acc(1), acc(2));
     y.segment<3>(0) += acc;
   }
@@ -465,7 +494,7 @@ int main(int argc, char *argv[]) {
   /* Just for testing Vs costg */
   Eigen::VectorXd state = Eigen::Matrix<double, 6, 1>::Zero();
   Eigen::VectorXd y = Eigen::Matrix<double, 6, 1>::Zero();
-  Eigen::Matrix<double, 3, 3> R, dRdt;
+  // Eigen::Matrix<double, 3, 3> R, dRdt;
   std::size_t it = 0;
   dso::Sp3DataBlock block;
   int sp3err = 0;
@@ -476,32 +505,42 @@ int main(int argc, char *argv[]) {
       printf("Something went wrong ....status = %3d\n", sp3err);
       return 1;
     }
+
     /* time of current block in TAI */
     auto block_tai = block.t;
     if (!std::strcmp(sp3.time_sys(), "GPS")) {
       block_tai = block_tai.gps2tai();
     }
+
     /* GCRF to ITRF rotation matrix */
-    if (gcrf2ecef(dso::MjdEpoch(block_tai), params.eops(), R, dRdt, fargs,
-                  eopr)) {
-      return 8;
-    }
+    Eigen::Quaterniond q_c2tirs, q_tirs2i;
+    prep_c2i(dso::MjdEpoch(block_tai), params.eops(), q_c2tirs, q_tirs2i,
+             fargs, eopr);
+
     /* get state for current epoch ITRF */
     state << block.state[0] * 1e3, block.state[1] * 1e3, block.state[2] * 1e3,
         block.state[4] * 1e-1, block.state[5] * 1e-1, block.state[6] * 1e-1;
-    /* transform state to GCRF */
-    y.segment<3>(0) = R.transpose() * state.segment<3>(0);
-    y.segment<3>(3) = R.transpose() * state.segment<3>(3) +
-                      dRdt.transpose() * state.segment<3>(0);
+
+    /* transform state to GCRF (from ITRF) */
+    Eigen::Vector3d omega;
+    omega << 0e0, 0e0, dso::earth_rotation_rate(eopr.lod());
+    y.segment<3>(0) =
+        q_c2tirs.conjugate() * (q_tirs2i.conjugate() * state.segment<3>(0));
+    y.segment<3>(3) = q_c2tirs.conjugate() *
+                      (q_tirs2i.conjugate() * state.segment<3>(3) +
+                       omega.cross(q_tirs2i.conjugate() * state.segment<3>(0)));
     state = y;
+
     /* seconds since initial epoch */
     dso::FractionalSeconds sec =
         block_tai.diff<dso::DateTimeDifferenceType::FractionalSeconds>(start_t);
+
     /* compute accelerations at this epoch */
     if (deriv(sec.seconds(), state, &params, y)) {
       fprintf(stderr, "ERROR. Failed computing derivative!\n");
       return 1;
     }
+
     ++it;
   }
 
