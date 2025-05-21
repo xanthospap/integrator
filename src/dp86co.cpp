@@ -87,7 +87,12 @@ constexpr const double er12 = -0.2235530786388629525884427845e-01;
 } /* namespace */
 
 int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
-                        Eigen::Ref<Eigen::VectorXd> &y) noexcept {
+                        Eigen::Ref<Eigen::VectorXd> y) noexcept {
+  // printf("Called dp86co from %.9f to %.9f with initial state=(%.3f, %.3f
+  // %.3f, "
+  //        "%.6f %.6f %.6f)\n",
+  //        t, tend, y(0), y(1), y(2), y(3), y(4), y(5));
+
   /* Initial factor for step size adjustment */
   const double expo1 = 1e0 / 8e0 - beta * 0.2;
   const double facc1 = 1e0 / fac1;
@@ -95,7 +100,7 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
   double facold = 1e-4;
 
   /* Determine the direction of integration */
-  const double posneg = ((tend-t)>=0)?1:-1;
+  const double posneg = ((tend - t) >= 0) ? 1 : -1;
 
   /* number of steps taken (total, rejected, accepted) */
   int nstep{0};
@@ -105,8 +110,14 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
   /* number of function calls */
   unsigned nfcn{0};
 
-  /* evaluate the function at the initial point */
-  wp.col(0) = y;
+  /* evaluate the function at the initial point, store at wp.col(0) */
+  if (fcn(t, y, params, wp.col(0))) {
+    fprintf(stderr,
+            "[ERROR] Integrator failed! Failed computing derivative at t0! "
+            "(traceback: %s)\n",
+            __func__);
+    return 1;
+  }
 
   /* if initial step is zero, compute a valid value. note: hinit853 will
    * overwrite wp.col(1) and wp.col(2)
@@ -114,6 +125,7 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
   hmax = std::abs(hmax);
   double h = hinit;
   if (h == 0e0) {
+    // printf("\tComputing initial step size, ...\n");
     if (hinit853(t, hmax, posneg, h, y, wp.col(0))) {
       fprintf(stderr,
               "[ERROR] Failed computing initial guess for step size! "
@@ -121,6 +133,7 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
               __func__);
       return 1;
     }
+    // printf("\tinitial step size, h=%.12f\n", h);
     ++nfcn;
   }
 
@@ -204,7 +217,7 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
     y1 = y + h * (a121 * wp.col(0) + +a1211 * wp.col(1) + a124 * wp.col(3) +
                   a125 * wp.col(4) + a126 * wp.col(5) + a127 * wp.col(6) +
                   a128 * wp.col(7) + a129 * wp.col(8) + a1210 * wp.col(9));
-    error += fcn(/*t + c16 * h*/t+h, y1, params, wp.col(2));
+    error += fcn(/*t + c16 * h*/ t + h, y1, params, wp.col(2));
     nfcn += 11;
 
     wp.col(3) = b1 * wp.col(0) + b11 * wp.col(1) + b12 * wp.col(2) +
@@ -219,7 +232,7 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
 
     /* Compute the first error component */
     Eigen::VectorXd verr =
-        wp.col(3) - bhh1 * wp.col(0) - bhh2*wp.col(8) - bhh3 * wp.col(2);
+        wp.col(3) - bhh1 * wp.col(0) - bhh2 * wp.col(8) - bhh3 * wp.col(2);
     const double err2 = ((verr.array() / sk).square()).sum();
 
     /* Compute the second error component */
@@ -289,7 +302,7 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
 
       /* step accepted: update for the next iteration */
       t += h;
-      
+
       /* step accepted: update the state vector */
       wp.col(0) = wp.col(3);
       y = wp.col(4);
@@ -305,7 +318,7 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
     } else {
       /* Step rejected */
       nrejct += 1;
-      hnew = h / std::min(facc1, fac11/safe);
+      hnew = h / std::min(facc1, fac11 / safe);
       last_step_rejected = 1;
       last_step = 0;
       // printf("step rejected, new step size = %.9f\n", hnew);
@@ -347,7 +360,8 @@ int dso::Dop853::dp86co(double t, double tend, double hmax, double hinit,
   }
 
   /* if everything is ok, we should have reached the last step; y now contains
-   * the state at tend 
+   * the state at tend
    */
+  printf("\tNumber of deriv calls in dp86 is %u\n", nfcn);
   return (!last_step);
 }

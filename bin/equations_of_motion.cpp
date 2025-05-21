@@ -1,4 +1,6 @@
+#include "datetime/datetime_write.hpp"
 #include "dop853.hpp"
+#include "geodesy/units.hpp"
 #include "iers/earth_rotation.hpp"
 #include "iers/fundarg.hpp"
 #include "iers/gravity.hpp"
@@ -6,23 +8,25 @@
 #include "iers/icgemio.hpp"
 #include "integration_parameters.hpp"
 #include "sp3.hpp"
-#include "geodesy/units.hpp"
 #include "yaml-cpp/yaml.h"
+#include <cassert>
 #include <cstdio>
+#include <datetime/core/datetime_io_core.hpp>
 
-constexpr const double GM_Moon = /*0.49028010560e13;*/4902.800076e9;
-constexpr const double GM_Sun = /*1.32712442076e20;*/132712440040.944e9;
+constexpr const double GM_Moon = /*0.49028010560e13;*/ 4902.800076e9;
+constexpr const double GM_Sun = /*1.32712442076e20;*/ 132712440040.944e9;
 
-int gcrf2ecef(const dso::MjdEpoch &tai, dso::EopSeries &eops,
-              Eigen::Matrix<double, 3, 3> &R,
-              Eigen::Matrix<double, 3, 3> &dRdt,
-              double *fargs,
-              dso::EopRecord &eopr) noexcept {
+int prep_c2i(const dso::MjdEpoch &tai, dso::EopSeries &eops,
+             Eigen::Quaterniond &q_c2tirs, Eigen::Quaterniond &q_tirs2i,
+             double *fargs, dso::EopRecord &eopr) noexcept {
+
   const auto tt = tai.tai2tt();
-  double X, Y;
 
-  /* compute (X, Y)_{cip} and (14) fundamental arguments */
-  dso::xycip06a(tt, X, Y, fargs);
+  /* compute (X,Y) CIP and fundamental arguments (we are doing this here
+   * to compute fargs).
+   */
+  double Xcip, Ycip;
+  dso::xycip06a(tt, Xcip, Ycip, fargs);
 
   /* get (interpolate EOPs) */
   if (dso::EopSeries::out_of_bounds(eops.interpolate(tt, eopr))) {
@@ -33,7 +37,7 @@ int gcrf2ecef(const dso::MjdEpoch &tai, dso::EopSeries &eops,
   /* compute gmst using an approximate value for UT1 (linear interpolation) */
   double dut1_approx;
   eops.approx_dut1(tt, dut1_approx);
-  [[maybe_unused]]const double gmst = dso::gmst(tt, tt.tt2ut1(dut1_approx));
+  [[maybe_unused]] const double gmst = dso::gmst(tt, tt.tt2ut1(dut1_approx));
 
   /* add libration effect [micro as] */
   {
@@ -55,10 +59,31 @@ int gcrf2ecef(const dso::MjdEpoch &tai, dso::EopSeries &eops,
     eopr.lod() += dlod * 1e-6;
   }
 
-  R = dso::detail::gcrs2itrs(dso::era00(tt.tt2ut1(eopr.dut())),
-                             dso::s06(tt, X, Y), dso::sp00(tt), X, Y,
-                             dso::sec2rad(eopr.xp()), dso::sec2rad(eopr.yp()),
-                             eopr.lod(), dRdt);
+  /* de-regularize */
+  {
+    double ut1_cor;
+    double lod_cor;
+    double omega_cor;
+    dso::deop_zonal_tide(fargs, ut1_cor, lod_cor, omega_cor);
+    /* apply (note: microseconds to seconds) */
+    eopr.dut() += (ut1_cor * 1e-6);
+    eopr.lod() += (lod_cor * 1e-6);
+  }
+
+  /* use fundamental arguments to compute s */
+  const double s = dso::s06(tt, Xcip, Ycip, fargs);
+  /* apply CIP corrections */
+  Xcip += dso::sec2rad(eopr.dX());
+  Ycip += dso::sec2rad(eopr.dY());
+  /* spherical crd for CIP */
+  double d, e;
+  dso::detail::xycip2spherical(Xcip, Ycip, d, e);
+  const double era = dso::era00(tt.tt2ut1(eopr.dut()));
+
+  q_c2tirs = dso::detail::c2tirs(era, s, d, e);
+  q_tirs2i = dso::detail::tirs2i(dso::sec2rad(eopr.xp()),
+                                 dso::sec2rad(eopr.yp()), dso::sp00(tt));
+
   return 0;
 }
 
@@ -67,42 +92,42 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
           Eigen::Ref<Eigen::VectorXd> y) noexcept {
 
   /* current time in TAI */
-  dso::MjdEpoch t = params->t0();
-  t.add_seconds(dso::FractionalSeconds(tsec));
+  dso::MjdEpoch t = params->t0().add_seconds(dso::FractionalSeconds(tsec));
 
   /* Dealunay args (14) */
   double fargs[14];
 
   /* Celestial to Terrestrial Matrix */
   dso::EopRecord eopr;
-  Eigen::Matrix<double, 3, 3> R, dRdt;
-  if (gcrf2ecef(dso::MjdEpoch(t), *(params->eops()), R, dRdt, fargs, eopr)) {
-    return 8;
-  }
+  Eigen::Quaterniond q_c2tirs, q_tirs2i;
+  prep_c2i(t, params->eops(), q_c2tirs, q_tirs2i, fargs, eopr);
+
+  /* satellite position in ECEF */
+  const Eigen::VectorXd r_ecef = q_tirs2i * (q_c2tirs * y0.segment<3>(0));
 
   /* Gravity field stokes coefficients */
-  auto stokes = *(params->grav());
-
+  dso::StokesCoeffs stokes(params->earth_gravity());
   /* compute acceleration for given epoch/position (ECEF) */
   [[maybe_unused]] Eigen::Matrix<double, 3, 3> g;
-  const Eigen::VectorXd r_ecef = R * y0.segment<3>(0);
-  Eigen::Matrix<double, 3, 1> acc;
-  if (dso::sh2gradient_cunningham(stokes, r_ecef, acc, g,
+  Eigen::Matrix<double, 3, 1> acc_grav;
+  if (dso::sh2gradient_cunningham(stokes, r_ecef, acc_grav, g,
                                   stokes.max_degree(), stokes.max_order(), -1,
                                   -1, &(params->tw()), &(params->tm()))) {
     fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 1;
   }
 
+  /* Third body perturbation */
   Eigen::Matrix<double, 3, 1> acc_moon;
   Eigen::Matrix<double, 3, 1> acc_sun;
-  /* get Sun position in ICRF */
-  Eigen::Matrix<double, 3, 1> rtb_sun;
-  if (dso::planet_pos(dso::Planet::SUN, t.tai2tt(), rtb_sun)) {
+  /* get Sun position & velocity in ICRF */
+  Eigen::Matrix<double, 6, 1> rtb_sun;
+  if (dso::planet_state(dso::Planet::SUN, t.tai2tt(), rtb_sun)) {
     fprintf(stderr, "ERROR Failed to compute Sun position!\n");
     return 2;
   }
-  acc_sun = dso::point_mass_acceleration(y0.segment<3>(0), rtb_sun, GM_Sun);
+  acc_sun = dso::point_mass_acceleration(y0.segment<3>(0),
+                                         rtb_sun.segment<3>(0), GM_Sun);
 
   /* get Moon position in ICRF */
   Eigen::Matrix<double, 3, 1> rtb_moon;
@@ -112,26 +137,35 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
   }
   acc_moon = dso::point_mass_acceleration(y0.segment<3>(0), rtb_moon, GM_Moon);
 
-  /* Solid Earth Tide (ITRF) */
-  Eigen::Matrix<double, 3, 1> acc_set;
-  params->mse_tide->stokes_coeffs(t.tai2tt(), t.tai2ut1(eopr.dut()),
-                                  R * rtb_moon, R * rtb_sun, fargs);
-  if (dso::sh2gradient_cunningham(params->mse_tide->stokes_coeffs(), r_ecef,
-                                  acc_set, g, -1, -1, -1, -1, &(params->tw()),
-                                  &(params->tm()))) {
-    fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
-    return 1;
-  }
-
-  /* set velocity vector (ICRF) */
-  y.segment<3>(0) = y0.segment<3>(3);
-
   /* ECEF to ICRF note that y = (v, a) and y0 = (r, v) */
-  //y.segment<3>(3) =
-  //    R.transpose() * acc + acc_tb;
-  // y.segment<3>(3) = (acc_moon + acc_sun);
-  // y.segment<3>(3) += R.transpose() * (acc_set + acc);
-  y.segment<3>(3) = R.transpose() * acc;
+  y.segment<3>(0) = y0.segment<3>(3);
+  y.segment<3>(3) = q_c2tirs.conjugate() * (q_tirs2i.conjugate() * acc_grav);
+
+  // printf("Requested ODE to %.12f, i.e. %.9f sec away,\n", t.as_mjd(), tsec);
+  // printf("\t(r, v) = (%.3f, %.3f, %.3f, %.6f, %.6f, %.6f) ->\n\t(v, a) =
+  // (%.3f, %.3f, %.3f, %.6f, %.6f, %.6f)\n", y0(0), y0(1), y0(2), y0(3), y0(4),
+  // y0(5), y(0), y(1), y(2), y(3), y(4), y(5));
+  //{
+  //  /* DEBUG */
+  //  Eigen::Matrix<double, 3, 1> gravn;
+  //  if (dso::sh2gradient_cunningham(stokes, r_ecef, gravn, g,
+  //                                  stokes.max_degree(), stokes.max_order(),
+  //                                  -1, -1, &(params->tw()), &(params->tm())))
+  //                                  {
+  //    fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
+  //    return 1;
+  //  }
+  //  Eigen::Matrix<double, 3, 1> grav1;
+  //  if (dso::sh2gradient_cunningham(stokes, r_ecef, grav1, g,
+  //                                  1, 1, -1,
+  //                                  -1, &(params->tw()), &(params->tm()))) {
+  //    fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
+  //    return 1;
+  //  }
+  //  const auto an1 = gravn - grav1;
+  //  printf("%.15f %.15f %.15f %.15f\n", t.tai2gps().as_mjd(), an1(0), an1(1),
+  //  an1(2));
+  //}
 
   return 0;
 }
@@ -141,9 +175,6 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Usage: %s CONFIG SP3_file [SAT_ID]\n", argv[0]);
     return 1;
   }
-
-  /* parse the yaml configuration file */
-  YAML::Node config = YAML::LoadFile(argv[1]);
 
   /* create an Sp3c instance */
   dso::Sp3c sp3(argv[2]);
@@ -166,52 +197,16 @@ int main(int argc, char *argv[]) {
     start_t = start_t.gps2tai();
   }
 
-  /* EOPs */
-  dso::EopSeries eop;
   {
-    std::string tmp = config["eop"].as<std::string>();
-    auto t1 = start_t;
-    t1.add_seconds(dso::seconds(-86400));
-    auto t2 = start_t;
-    t2.add_seconds(dso::seconds(5 * 86400));
-    if (dso::parse_iers_C04(tmp.c_str(), dso::MjdEpoch(t1), dso::MjdEpoch(t2),
-                            eop)) {
-      fprintf(stderr, "ERROR Failed parsing eop file\n");
-      return 1;
-    }
-    eop.regularize();
+    char buf[64];
+    printf("Note: starting epoch in Sp3 is %s\n",
+           dso::to_char<dso::YMDFormat::YYYYMMDD, dso::HMSFormat::HHMMSSF>(
+               start_t, buf));
   }
 
-  /* load planetary ephemeris kernels */
-  std::string tmp = config["planetary-ephemeris"]["bsp"].as<std::string>();
-  dso::load_spice_kernel(tmp.c_str());
-  tmp = config["planetary-ephemeris"]["tls"].as<std::string>();
-  dso::load_spice_kernel(tmp.c_str());
-
-  /* Earth's gravity field */
-  dso::StokesCoeffs stokes;
-  {
-    tmp = config["gravity"]["model"].as<std::string>();
-    int DEGREE = config["gravity"]["degree"].as<int>();
-    int ORDER = config["gravity"]["order"].as<int>();
-    dso::Icgem icgem(tmp.c_str());
-    if (icgem.parse_data(DEGREE, ORDER, start_t, stokes)) {
-      fprintf(stderr, "ERROR Failed reading gravity model!\n");
-      return 1;
-    }
-    /* checks */
-    assert(stokes.max_degree() == DEGREE);
-    assert(stokes.max_order() == ORDER);
-  }
-
-  /* Solid Earth Tides */
-  dso::SolidEarthTide setide(iers2010::GMe, iers2010::Re, GM_Sun, GM_Moon);
-
-  /* setup integration parameters */
-  dso::IntegrationParameters params;
-  params.meops = &eop;
-  params.mgrav = &stokes;
-  params.mse_tide = &setide;
+  auto t2 = start_t.add_seconds(dso::seconds(10 * 86400));
+  dso::IntegrationParameters params = dso::IntegrationParameters::from_config(
+      argv[1], dso::MjdEpoch(start_t), dso::MjdEpoch(t2));
   params.mtai0 = dso::MjdEpoch(start_t);
 
   /* setup the integrator */
@@ -224,60 +219,82 @@ int main(int argc, char *argv[]) {
 
   Eigen::VectorXd state = Eigen::Matrix<double, 6, 1>::Zero();
   Eigen::VectorXd y = Eigen::Matrix<double, 6, 1>::Zero();
-  Eigen::Matrix<double, 3, 3> R, dRdt;
   std::size_t it = 0;
   dso::Sp3DataBlock block;
   int sp3err = 0;
   while (!sp3err) {
+    /* get next redord from sp3 */
     sp3err = sp3.get_next_data_block(sv, block);
     if (sp3err > 0) {
       printf("Something went wrong ....status = %3d\n", sp3err);
       return 1;
     }
+
     bool position_ok = !block.flag.is_set(dso::Sp3Event::bad_abscent_position);
     if (position_ok && (!sp3err)) {
+      /* got new SP3 record, flag is ok */
       auto block_tai = block.t;
       if (!std::strcmp(sp3.time_sys(), "GPS")) {
         block_tai = block_tai.gps2tai();
       }
-      if (gcrf2ecef(dso::MjdEpoch(block_tai), eop, R, dRdt, fargs, eopr)) {
-        return 8;
-      }
+
+      /* GRCF/ITRF transformation quaternions (at t of new sp3 record) */
+      Eigen::Quaterniond q_c2tirs, q_tirs2i;
+      prep_c2i(dso::MjdEpoch(block_tai), params.eops(), q_c2tirs, q_tirs2i,
+               fargs, eopr);
+
       if (!it) {
-        /* first state of satellite in file; transform to celestial and store 
+        /*
+         * first state of satellite in file; transform to celestial and store
          * as state and start_t. This is where we start integrating from.
          */
         state << block.state[0] * 1e3, block.state[1] * 1e3,
             block.state[2] * 1e3, block.state[4] * 1e-1, block.state[5] * 1e-1,
             block.state[6] * 1e-1;
-        y.segment<3>(0) = R.transpose() * state.segment<3>(0);
-        y.segment<3>(3) = R.transpose() * state.segment<3>(3) +
-                          dRdt.transpose() * state.segment<3>(0);
+
+        /* transform state to GCRF (from ITRF) */
+        Eigen::Vector3d omega;
+        omega << 0e0, 0e0, dso::earth_rotation_rate(eopr.lod());
+        y.segment<3>(0) =
+            q_c2tirs.conjugate() * (q_tirs2i.conjugate() * state.segment<3>(0));
+        y.segment<3>(3) =
+            q_c2tirs.conjugate() *
+            (q_tirs2i.conjugate() * state.segment<3>(3) +
+             omega.cross(q_tirs2i.conjugate() * state.segment<3>(0)));
+
         start_t = block_tai;
         state = y;
+
       } else {
         /* new entry; seconds since intial epoch */
         dso::FractionalSeconds sec =
             block_tai.diff<dso::DateTimeDifferenceType::FractionalSeconds>(
                 start_t);
+
         /* integrate from initial conditions to this epoch */
         if (dop853.integrate(dso::MjdEpoch(start_t), sec.seconds(), state, y)) {
           fprintf(stderr, "ERROR. Integration failed! sec is %.3f\n",
                   sec.seconds());
           return 1;
         }
+
         /* transform integration results to ECEF */
         Eigen::VectorXd yt = y;
-        y.segment<3>(0) = R * yt.segment<3>(0);
-        y.segment<3>(3) = R * yt.segment<3>(3) + dRdt * yt.segment<3>(0);
+        Eigen::Vector3d omega;
+        omega << 0e0, 0e0, dso::earth_rotation_rate(eopr.lod());
+        yt.segment<3>(0) = q_tirs2i * (q_c2tirs * y.segment<3>(0));
+        yt.segment<3>(3) = q_tirs2i * (q_c2tirs * y.segment<3>(3) -
+                                       omega.cross(q_c2tirs * y.segment<3>(0)));
+
         printf("%.12f %.6f %.6f %.6f %.9f %.9f %.9f %.6f %.6f %.6f %.9f %.9f "
                "%.9f\n",
-               sec.seconds(),
-               block.state[0] * 1e3, block.state[1] * 1e3, block.state[2] * 1e3,
-               block.state[4] * 1e-1, block.state[5] * 1e-1,
-               block.state[6] * 1e-1, y(0), y(1), y(2), y(3), y(4), y(5));
+               sec.seconds(), block.state[0] * 1e3, block.state[1] * 1e3,
+               block.state[2] * 1e3, block.state[4] * 1e-1,
+               block.state[5] * 1e-1, block.state[6] * 1e-1, y(0), y(1), y(2),
+               y(3), y(4), y(5));
       }
-    }
+    } /* new sp3 record, flag ok */
+
     ++it;
     if (it >= 100)
       break;
