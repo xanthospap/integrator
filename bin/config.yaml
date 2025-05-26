@@ -42,10 +42,9 @@ ocean-pole-tide:
 
 dealiasing:
   # Leave model name empty to not include effect
-  # model: "AOD1B RL06"
-  model:
+  model: "AOD1B RL06"
   # filename of first file is series ...
-  data-file: data/AOD1B_2008-07-03_X_06.asc
+  data-file: data/AOD1B_2023-05-01_X_06.asc
   # ... and folder where subsequent files can be found (same naming convention)
   data-dir: data
   degree: 180
@@ -73,3 +72,7 @@ atmospheric-tide:
     s1: AOD1B_ATM_S1_06.asc
     s3: AOD1B_ATM_S3_06.asc
     t3: AOD1B_ATM_T3_06.asc
+
+satellite-attitude:
+  satellite: ja3
+  data_file: data/qua_ja3.csv

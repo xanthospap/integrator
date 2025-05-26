@@ -11,10 +11,11 @@ project(
 find_package(datetime REQUIRED)
 find_package(iers REQUIRED)
 find_package(geodesy REQUIRED)
+find_package(sysnsats REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 # Pass the library dependencies to subdirectories
-set(PROJECT_DEPENDENCIES iers geodesy datetime)
+set(PROJECT_DEPENDENCIES sysnsats iers geodesy datetime)
 
 # Define an option for building binaries (defaults to ON)
 option(BUILD_PROGS "Enable building of binaries" ON)
