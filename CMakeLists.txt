@@ -14,6 +14,19 @@ find_package(geodesy REQUIRED)
 find_package(sysnsats REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
+# Try to find Boost
+find_package(Boost)
+
+# Conditionally handle Boost if found
+if(Boost_FOUND)
+    message(STATUS "Boost found: ${Boost_INCLUDE_DIRS}")
+    include_directories(${Boost_INCLUDE_DIRS})
+    # Define macro USE_BOOST
+    add_compile_definitions(USE_BOOSTDD)
+else()
+    message(STATUS "Boost NOT found; proceeding without it.")
+endif()
+
 # Pass the library dependencies to subdirectories
 set(PROJECT_DEPENDENCIES sysnsats iers geodesy datetime)
 

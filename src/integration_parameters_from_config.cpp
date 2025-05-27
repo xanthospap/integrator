@@ -2,24 +2,21 @@
 #include "integration_parameters.hpp"
 #include "yaml-cpp/yaml.h"
 
-bool is_nonempty_string(const YAML::Node &node)
-{
+bool is_nonempty_string(const YAML::Node &node) {
   return node.IsDefined() && node.IsScalar() && !node.as<std::string>().empty();
 }
 
 dso::IntegrationParameters
 dso::IntegrationParameters::from_config(const char *fn,
                                         const dso::MjdEpoch &tt_start,
-                                        const dso::MjdEpoch &tt_stop)
-{
+                                        const dso::MjdEpoch &tt_stop) {
   /* parse the yaml configuration file */
   YAML::Node config = YAML::LoadFile(fn);
 
   IntegrationParameters params;
 
   /* check dates */
-  if (tt_stop < tt_start)
-  {
+  if (tt_stop < tt_start) {
     std::string err_msg =
         "[ERROR] Invalid start/stop dates in config file (traceback:" +
         std::string(__func__) + ")\n";
@@ -39,8 +36,7 @@ dso::IntegrationParameters::from_config(const char *fn,
     const auto t1 = tt_start.add_seconds(dso::FractionalSeconds(-86400));
     const auto t2 = tt_stop.add_seconds(dso::FractionalSeconds(86400));
     if (dso::parse_iers_C04(tmp.c_str(), dso::MjdEpoch(t1), dso::MjdEpoch(t2),
-                            params.meops))
-    {
+                            params.meops)) {
       std::string err_msg = "[ERROR] Failed parsing EOP file " + tmp +
                             " (traceback:" + std::string(__func__) + ")\n";
       throw std::runtime_error(err_msg);
@@ -62,8 +58,7 @@ dso::IntegrationParameters::from_config(const char *fn,
     dso::Icgem icgem(tmp.c_str());
     if (icgem.parse_data(DEGREE, ORDER,
                          dso::from_mjdepoch<dso::nanoseconds>(tt_midepoch),
-                         params.mgrav))
-    {
+                         params.mgrav)) {
       std::string err_msg = "[ERROR] Failed parsing gravity field model " +
                             tmp + " (traceback:" + std::string(__func__) +
                             ")\n";
@@ -75,15 +70,11 @@ dso::IntegrationParameters::from_config(const char *fn,
   }
 
   /* Solid Earth Tides (all parameters are default initialized) */
-  if (is_nonempty_string(config["solid-earth-tide"]["model"]))
-  {
+  if (is_nonempty_string(config["solid-earth-tide"]["model"])) {
     tmp = config["solid-earth-tide"]["model"].as<std::string>();
-    if (tmp == "IERS2010")
-    {
+    if (tmp == "IERS2010") {
       params.mse_tide = new dso::SolidEarthTide();
-    }
-    else
-    {
+    } else {
       std::string err_msg = "[ERROR] Unknown Solid Earth Tide model given " +
                             tmp + " (traceback:" + std::string(__func__) +
                             ")\n";
@@ -93,8 +84,7 @@ dso::IntegrationParameters::from_config(const char *fn,
 
   /* Ocean Tide (if model name is non-empty) */
   dso::OceanTide *ot = nullptr;
-  if (is_nonempty_string(config["ocean-tide"]["model"]))
-  {
+  if (is_nonempty_string(config["ocean-tide"]["model"])) {
     /* basic parameters, must exist */
     tmp = config["ocean-tide"]["model"].as<std::string>();
     int DEGREE = config["ocean-tide"]["degree"].as<int>();
@@ -104,21 +94,17 @@ dso::IntegrationParameters::from_config(const char *fn,
         config["ocean-tide"]["groops_file_list"].as<std::string>();
     /* OceanTide model with admittance */
     if (is_nonempty_string(config["ocean-tide"]["groops_doodson02_file"]) &&
-        is_nonempty_string(config["ocean-tide"]["groops_admittance03_file"]))
-    {
+        is_nonempty_string(config["ocean-tide"]["groops_admittance03_file"])) {
       std::string file02 =
           config["ocean-tide"]["groops_doodson02_file"].as<std::string>();
       std::string file03 =
           config["ocean-tide"]["groops_admittance03_file"].as<std::string>();
 
-      try
-      {
+      try {
         ot = new dso::OceanTide(dso::groops_ocean_atlas(
             groops_file_list.c_str(), file02.c_str(), file03.c_str(),
             data_dir.c_str(), DEGREE, ORDER));
-      }
-      catch (std::exception &e)
-      {
+      } catch (std::exception &e) {
         fprintf(stderr, e.what());
         std::string err_msg = "[ERROR] Failed to construct Ocean Tide model "
                               "with admittance from "
@@ -128,17 +114,12 @@ dso::IntegrationParameters::from_config(const char *fn,
                               " (traceback:" + std::string(__func__) + ")\n";
         throw std::runtime_error(err_msg);
       }
-    }
-    else
-    {
+    } else {
       /* OceanTide model without admittance */
-      try
-      {
+      try {
         ot = new dso::OceanTide(dso::groops_ocean_atlas(
             groops_file_list.c_str(), data_dir.c_str(), DEGREE, ORDER));
-      }
-      catch (std::exception &e)
-      {
+      } catch (std::exception &e) {
         fprintf(stderr, e.what());
         std::string err_msg =
             "[ERROR] Failed to construct Ocean Tide model from "
@@ -152,15 +133,11 @@ dso::IntegrationParameters::from_config(const char *fn,
   params.moc_tide = ot;
 
   /* Solid Earth Pole Tide */
-  if (is_nonempty_string(config["solid-earth-pole-tide"]["model"]))
-  {
+  if (is_nonempty_string(config["solid-earth-pole-tide"]["model"])) {
     tmp = config["solid-earth-pole-tide"]["model"].as<std::string>();
-    if (tmp == "IERS2010")
-    {
+    if (tmp == "IERS2010") {
       params.mep_tide = new dso::PoleTide();
-    }
-    else
-    {
+    } else {
       std::string err_msg =
           "[ERROR] Unknown (Solid Earth) Pole Tide model given " + tmp +
           " (traceback:" + std::string(__func__) + ")\n";
@@ -171,19 +148,15 @@ dso::IntegrationParameters::from_config(const char *fn,
   /* Ocean Pole Tide (if model name is non-empty) */
   dso::OceanPoleTide *opt = nullptr;
   {
-    if (is_nonempty_string(config["ocean-pole-tide"]["model"]))
-    {
+    if (is_nonempty_string(config["ocean-pole-tide"]["model"])) {
       tmp = config["ocean-pole-tide"]["model"].as<std::string>();
-      if (tmp == "Desai02")
-      {
+      if (tmp == "Desai02") {
         /* Desai 2002 model, need degree, order and coeffs */
         int DEGREE = config["ocean-pole-tide"]["degree"].as<int>();
         int ORDER = config["ocean-pole-tide"]["order"].as<int>();
         std::string tfn = config["ocean-pole-tide"]["coeffs"].as<std::string>();
         opt = new dso::OceanPoleTide(DEGREE, ORDER, tfn.c_str());
-      }
-      else
-      {
+      } else {
         std::string err_msg = "[ERROR] Unknown Ocean Pole Tide model given " +
                               tmp + " (traceback:" + std::string(__func__) +
                               ")\n";
@@ -195,24 +168,19 @@ dso::IntegrationParameters::from_config(const char *fn,
 
   /* Atmospheric Tide (if model name is non-empty) */
   dso::AtmosphericTide *atm = nullptr;
-  if (is_nonempty_string(config["atmospheric-tide"]["model"]))
-  {
+  if (is_nonempty_string(config["atmospheric-tide"]["model"])) {
     int DEGREE = config["atmospheric-tide"]["degree"].as<int>();
     int ORDER = config["atmospheric-tide"]["order"].as<int>();
     std::string data_dir =
         config["atmospheric-tide"]["data_dir"].as<std::string>();
-    if (is_nonempty_string(config["atmospheric-tide"]["groops_file_list"]))
-    {
+    if (is_nonempty_string(config["atmospheric-tide"]["groops_file_list"])) {
       /* generating an AtmosphericTide instance from GROOPS files */
       std::string fn1 =
           config["atmospheric-tide"]["groops_file_list"].as<std::string>();
-      try
-      {
+      try {
         atm = new dso::AtmosphericTide(dso::groops_atmospheric_atlas(
             fn1.c_str(), data_dir.c_str(), DEGREE, ORDER));
-      }
-      catch (std::exception &e)
-      {
+      } catch (std::exception &e) {
         fprintf(stderr, e.what());
         std::string err_msg =
             "[ERROR] Failed to construct Atmospheric Tide model from "
@@ -221,20 +189,16 @@ dso::IntegrationParameters::from_config(const char *fn,
             ")\n";
         throw std::runtime_error(err_msg);
       }
-    }
-    else
-    {
+    } else {
       /* generating an AtmosphericTide instance from AOD1B files */
       atm = new dso::AtmosphericTide();
       YAML::Node tide_atlas =
           config["atmospheric-tide"]["tide_atlas_from_aod1b"];
       for (YAML::const_iterator it = tide_atlas.begin(); it != tide_atlas.end();
-           ++it)
-      {
+           ++it) {
         std::string filename = it->second.as<std::string>();
         std::string full_path = data_dir + "/" + filename;
-        if (atm->append_wave(full_path.c_str(), DEGREE, ORDER))
-        {
+        if (atm->append_wave(full_path.c_str(), DEGREE, ORDER)) {
           std::string err_msg =
               "[ERROR] Failed appending tide (file) " + full_path +
               " to Atmospheric Tide model (traceback:" + std::string(__func__) +
@@ -248,18 +212,14 @@ dso::IntegrationParameters::from_config(const char *fn,
 
   /* Dealiasing (if model name is non-empty) */
   dso::Aod1bDataStream<dso::AOD1BCoefficientType::GLO> *dap = nullptr;
-  if (is_nonempty_string(config["dealiasing"]["model"]))
-  {
+  if (is_nonempty_string(config["dealiasing"]["model"])) {
     const auto f = config["dealiasing"]["data-file"].as<std::string>();
     const auto d = config["dealiasing"]["data-dir"].as<std::string>();
-    try
-    {
+    try {
       dap = new dso::Aod1bDataStream<dso::AOD1BCoefficientType::GLO>(f.c_str(),
                                                                      d.c_str());
       dap->initialize();
-    }
-    catch (std::exception &e)
-    {
+    } catch (std::exception &e) {
       fprintf(stderr, e.what());
       std::string err_msg =
           "[ERROR] Failed to construct an Aod1bDataStream<GLO> stream from "
@@ -270,29 +230,39 @@ dso::IntegrationParameters::from_config(const char *fn,
   }
   params.mdealias = dap;
 
-  /* Satellite attitude (if model name is non-empty) */
+  /* Satellite attitude (if model satellite-attitude::data_file is non-empty) */
   dso::SatelliteAttitude *satat = nullptr;
   dso::SatelliteMacromodel *satmm = nullptr;
   dso::attitude_details::MeasuredAttitudeData *mad = nullptr;
-  if (is_nonempty_string(config["satellite-attitude"]["data_file"]))
-  {
+  if (is_nonempty_string(config["satellite-attitude"]["data_file"])) {
     const auto d = config["satellite-attitude"]["data_file"].as<std::string>();
     const auto s = config["satellite-attitude"]["satellite"].as<std::string>();
-    try
-    {
+    try {
       const dso::SATELLITE sat = dso::translate_satid(s.c_str());
       satat = new dso::MeasuredAttitude(sat, d.c_str());
-      mad = new dso::attitude_details::MeasuredAttitudeData(dso::measured_attitude_data_factory(sat));
-      satmm = new dso::SatelliteMacromodel(dso::SatelliteMacromodel::createSatelliteMacromodel(sat));
-    }
-    catch (std::exception &e)
-    {
+      mad = new dso::attitude_details::MeasuredAttitudeData(
+          dso::measured_attitude_data_factory(sat));
+      satmm = new dso::SatelliteMacromodel(
+          dso::SatelliteMacromodel::createSatelliteMacromodel(sat));
+    } catch (std::exception &e) {
       fprintf(stderr, e.what());
-      std::string err_msg =
-          "[ERROR] Failed to construct a SatelliteAttitude and/or SatelliteMacromodel instance from "
-          "config parameters " +
-          s + ", " + d + " (traceback:" + std::string(__func__) + ")\n";
+      std::string err_msg = "[ERROR] Failed to construct a SatelliteAttitude "
+                            "and/or SatelliteMacromodel instance from "
+                            "config parameters " +
+                            s + ", " + d +
+                            " (traceback:" + std::string(__func__) + ")\n";
       throw std::runtime_error(err_msg);
+    }
+
+    if (is_nonempty_string(config["satellite-attitude"]["cnes_sat_file"])) {
+      const auto c =
+          config["satellite-attitude"]["cnes_sat_file"].as<std::string>();
+      if (satmm->load_satellite_mass_correction(c.c_str(), tt_midepoch)) {
+        std::string err_msg = "[ERROR] Failed loading CNES satellite file " +
+                              c + " (traceback:" + std::string(__func__) +
+                              ")\n";
+        throw std::runtime_error(err_msg);
+      }
     }
   }
   params.matt = satat;

@@ -18,15 +18,28 @@
 #include <stdexcept>
 #endif
 
+/*
+ * Equations Of Motion:
+ * -------------------
+ * y = [r(t), v(t)] = [rx, ry, rz, vx, vy, vz]
+ * y'= [v(t), a(t)] = [vx, vy, vz, ax, ay, az]
+ *
+ * y' = f(t, r)
+ *
+ * State Trnasition Matrix
+ * -----------------------
+ *
+ *        | dv/dr dv/dv |
+ * dΦdt = | da/dr da/dv | * Φ(t, t0)
+ *   
+ *      = |   0     I   |
+ *        | da/dr da/dv | * Φ(t, t0)
+ *
+ */
+
 constexpr const double GM_Moon = /*0.49028010560e13;*/ 4902.800076e9;
 constexpr const double GM_Sun = /*1.32712442076e20;*/ 132712440040.944e9;
 constexpr const double EVERY_SEC = 180e0;
-
-#ifdef USE_BOOST
-/* Define the State Type for ODEINT */
-typedef std::array<double, 6> state_type;
-typedef boost::numeric::odeint::runge_kutta_dopri5<state_type> dopri5_type;
-#endif
 
 /* Compute relevant quaternions for the ITRS/GCRS transformation
  */
@@ -107,20 +120,9 @@ int prep_c2i(const dso::MjdEpoch &tai, dso::EopSeries &eops,
   return 0;
 }
 
-#ifdef USE_BOOST
-struct EomSystem {
-  dso::IntegrationParameters *params;
-  EomSystem(dso::IntegrationParameters *p) noexcept : params(p) {}
-
-  void operator()(const state_type &x, state_type &dxdt, double tsec) {
-    Eigen::Matrix<double, 6, 1> y0;
-    for (int i = 0; i < 6; i++)
-      y0(i) = x[i];
-#else
 int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
           dso::IntegrationParameters *params,
           Eigen::Ref<Eigen::VectorXd> yp) noexcept {
-#endif
     /* epoch of request in TT */
     const auto tt =
         (params->t0().add_seconds(dso::FractionalSeconds(tsec))).tai2tt();
@@ -137,24 +139,14 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
     Eigen::Matrix<double, 6, 1> rsun;
     if (dso::planet_state(dso::Planet::SUN, tt, rsun)) {
       fprintf(stderr, "ERROR Failed to compute Sun position!\n");
-#ifdef USE_BOOST
-      throw std::runtime_error(
-          "ERROR. Failed computing derivative [Sun position]\n");
-#else
     return 100;
-#endif
     }
 
     /* get Moon position in ICRF */
     Eigen::Matrix<double, 3, 1> rmoon;
     if (dso::planet_pos(dso::Planet::MOON, tt, rmoon)) {
       fprintf(stderr, "ERROR Failed to compute Moon position!\n");
-#ifdef USE_BOOST
-      throw std::runtime_error(
-          "ERROR. Failed computing derivative [Moon position]\n");
-#else
     return 101;
-#endif
     }
 
     /* state in ITRS (from GCRS) */
@@ -165,9 +157,10 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
 
     /* accumulated acceleration and gradient in ITRS */
     Eigen::Vector3d ai = Eigen::Vector3d::Zero();
-    [[maybe_unused]] Eigen::Matrix<double, 3, 3> gi;
+    Eigen::Matrix<double, 3, 3> gi;
     /* accumulated acceleration in GCRS */
     Eigen::Vector3d ac = Eigen::Vector3d::Zero();
+    Eigen::Matrix<double, 3, 3> gc = Eigen::Matrix<double, 3, 3>::Zero();
 
     /* accumulated SH coeffs
     TODO!! WARNING!! What if some other SH coeffs (e.g. ocean tide) have (n,m)>
@@ -223,12 +216,7 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
       if (params->dealias()->coefficients_at(
               dso::from_mjdepoch<dso::nanoseconds>(tt), tempstokes)) {
         fprintf(stderr, "Failed interpolating dealiasing coefficients\n");
-#ifdef USE_BOOST
-        throw std::runtime_error(
-            "ERROR. Failed computing derivative [deAliasing]\n");
-#else
       return 103;
-#endif
       }
       acstokes += tempstokes;
     }
@@ -242,78 +230,78 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
 
     /* acceleration from accumulated SH expansion */
     if (dso::sh2gradient_cunningham(acstokes,
-                                    // params->earth_gravity(),
                                     itrs.segment<3>(0), ai, gi,
                                     params->earth_gravity().max_degree(),
                                     params->earth_gravity().max_order(), -1, -1,
                                     &(params->tw()), &(params->tm()))) {
       fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
-#ifdef USE_BOOST
-      throw std::runtime_error(
-          "ERROR. Failed computing derivative [sh2gradient]\n");
-#else
     return 104;
-#endif
     }
 
     /* Third Body perturbations and Relativity (IERS 2010) */
     {
+      Eigen::Matrix<double, 3, 3> gct;
       ac += dso::point_mass_acceleration(y0.segment<3>(0), rsun.segment<3>(0),
-                                         GM_Sun);
-      ac += dso::point_mass_acceleration(y0.segment<3>(0), rmoon, GM_Moon);
+                                         GM_Sun, gct);
+      gc += gct;
+      ac += dso::point_mass_acceleration(y0.segment<3>(0), rmoon, GM_Moon, gct);
+      gc += gct;
       /* Relativistic Correction */
-      ac += dso::iers2010_relativistic_acceleration(y0, rsun);
+      ac += dso::iers2010_relativistic_acceleration(y0.segment<6>(0), rsun);
     }
 
     /* Solar Radiation Pressure */
     if (params->matt) {
       const double of =
           dso::conical_occultation(y0.segment<3>(0), rsun.segment<3>(0));
+          // printf("\tOccultation Factor %.4f\n", of);
       if (of > 0e0) {
         /* get attitude */
         if (params->matt->attitude_at(tt, *(params->mattdata))) {
           fprintf(stderr, "[ERROR] Failed getting attitude!\n");
-#ifdef USE_BOOST
-          throw std::runtime_error(
-              "ERROR. Failed computing derivative [attitude]\n");
-#else
         return 200;
-#endif
+          /* compute SRP acceleration */
+          ac += of * dso::solar_radiation_pressure(
+                         params->msatmm->rotate_macromodel(
+                             params->mattdata->quaternions(),
+                             params->mattdata->angles()),
+                         y0.segment<3>(0), rsun.segment<3>(0));
+          auto srp = of * dso::solar_radiation_pressure(
+                         params->msatmm->rotate_macromodel(
+                             params->mattdata->quaternions(),
+                             params->mattdata->angles()),
+                         y0.segment<3>(0), rsun.segment<3>(0));
+          printf("\tSRP components (%.4e, %.4e, %.4e)\n", srp(0), srp(1), srp(2));
         }
-        /* compute SRP acceleration */
-        ac +=
-            (of / params->msatmm->satellite_mass()) *
-            dso::solar_radiation_pressure(params->msatmm->rotate_macromodel(
-                                              params->mattdata->quaternions(),
-                                              params->mattdata->angles()),
-                                          y0.segment<3>(0), rsun.segment<3>(0));
       }
     }
-
-#ifdef USE_BOOST
-    Eigen::Matrix<double, 6, 1> yp = Eigen::Matrix<double, 6, 1>::Zero();
-#endif
 
     /* form the derivative vector */
     yp.segment<3>(0) = y0.segment<3>(3);
     yp.segment<3>(3) = ac + q_c2tirs.conjugate() * (q_tirs2i.conjugate() * ai);
 
-#ifdef USE_BOOST
-    /* form the derivative vector */
-    dxdt[0] = yp(3);
-    dxdt[1] = yp(4);
-    dxdt[2] = yp(5);
-    dxdt[3] = yp(0);
-    dxdt[4] = yp(1);
-    dxdt[5] = yp(2);
+    /* handle STM */
+    Eigen::Matrix<double,6,6> F0;
+    F0.block<6,1>(0,0) = y0.segment<6>(6);
+    F0.block<6,1>(0,1) = y0.segment<6>(12);
+    F0.block<6,1>(0,2) = y0.segment<6>(18);
+    F0.block<6,1>(0,3) = y0.segment<6>(24);
+    F0.block<6,1>(0,4) = y0.segment<6>(30);
+    F0.block<6,1>(0,5) = y0.segment<6>(36);
+    
+    Eigen::Matrix<double,6,6> dFdt;
+    dFdt.block<3,3>(0,0) = Eigen::Matrix<double,3,3>::Zero();
+    dFdt.block<3,3>(0,3) = Eigen::Matrix<double,3,3>::Identity();
+    dFdt.block<3,3>(3,0) = gi; //q_c2tirs.conjugate().toRotationMatrix() * (q_tirs2i.conjugate().toRotationMatrix() * gi) + gc;
+    dFdt.block<3,3>(3,3) = Eigen::Matrix<double,3,3>::Zero();
 
-    return;
-  }
-}; /* struct EomSystem */
-#else
+    const auto F = dFdt * F0;
+    for (int i=0; i<6; i++) {
+      yp.segment<6>(6 + i*6) = F.block<6,1>(0,i);
+    }
+
   return 0;
 }
-#endif
 
 int main(int argc, char *argv[]) {
   if (argc < 3) {
@@ -352,12 +340,8 @@ int main(int argc, char *argv[]) {
   dso::EopRecord eopr;
 
 /* integrator */
-#ifdef USE_BOOST
-  auto stepper = make_controlled(1e-8, 1e-8, dopri5_type());
-#else
-  dso::Dop853 dop853(deriv, 6, &params, 1e-9, 1e-12);
+  dso::Dop853 dop853(deriv, 6*6+6, &params, 1e-9, 1e-12);
   dop853.set_stiffness_check(10);
-#endif
 
   Eigen::VectorXd y0 = Eigen::Matrix<double, 6, 1>::Zero();
   Eigen::VectorXd y = Eigen::Matrix<double, 6, 1>::Zero();
@@ -426,24 +410,21 @@ int main(int argc, char *argv[]) {
         }
       }
 
-#ifdef USE_BOOST
-      state_type x = {y0(0), y0(1), y0(2), y0(3), y0(4), y0(5)};
-      boost::numeric::odeint::integrate_adaptive(stepper, EomSystem(&params), x,
-                                                 0e0, sec.seconds(), 1e-3);
-      yc << x[0], x[1], x[2], x[3], x[4], x[5];
-#else
-      if (dop853.integrate(0e0, sec.seconds(), y0, yc)) {
+      Eigen::VectorXd y0stm(6+6*6), ycstm(6+6*6);
+      y0stm.segment<6>(0) = y0;
+      y0stm.segment(6, 36) = Eigen::Matrix<double,6,6>::Identity().reshaped(36, 1);
+
+      if (dop853.integrate(0e0, sec.seconds(), y0stm, ycstm)) {
         fprintf(stderr, "ERROR. Integration failed! sec is %.3f\n",
                 sec.seconds());
         return 1;
       }
-#endif
 
       /* compare in ITRS */
       Eigen::VectorXd yi = Eigen::Matrix<double, 6, 1>::Zero();
-      yi.segment<3>(0) = q_tirs2i * (q_c2tirs * yc.segment<3>(0));
-      yi.segment<3>(3) = q_tirs2i * (q_c2tirs * yc.segment<3>(3) -
-                                     omega.cross(q_c2tirs * yc.segment<3>(0)));
+      yi.segment<3>(0) = q_tirs2i * (q_c2tirs * ycstm.segment<3>(0));
+      yi.segment<3>(3) = q_tirs2i * (q_c2tirs * ycstm.segment<3>(3) -
+                                     omega.cross(q_c2tirs * ycstm.segment<3>(0)));
 
       printf("%.9f %.3f %.3f %.3f %.6f %.6f %.6f %.3f %.3f %.3f %.6f %.6f "
              "%.6f\n",

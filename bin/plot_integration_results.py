@@ -109,23 +109,44 @@ def parse(source, sec2hr=False):
     N = 0
 
     for line in source:
-        if line[0] != '#':
-            try:
-                sec, x1, y1, z1, vx1, vy1, vz1, x2, y2, z2, vx2, vy2, vz2 = [ float(x) for x in line.split(' ') ]
-                t.append(sec if sec2hr is False else sec/3600.)
-                lx1.append(x1); ly1.append(y1); lz1.append(z1);
-                lx2.append(x2); ly2.append(y2); lz2.append(z2);
-                lvx1.append(vx1); lvy1.append(vy1); lvz1.append(vz1);
-                lvx2.append(vx2); lvy2.append(vy2); lvz2.append(vz2);
-                N += 1
-                mean_height = mean_height * (N-1)/N + np.linalg.norm(np.array((x1,y1,z1))*1e-3)/N
-                mean_velo = mean_velo * (N-1)/N + np.linalg.norm(np.array((vx1,vy1,vz1)))/N
-            except:
-                pass
+        # print(line.strip())
+        if line[0] != '#' and (not 'Number of deriv calls' in line):
+            #try:
+            sec, x1, y1, z1, vx1, vy1, vz1, x2, y2, z2, vx2, vy2, vz2 = [ float(x) for x in line.split(' ') ]
+            t.append(sec if sec2hr is False else sec/3600.)
+            lx1.append(x1); ly1.append(y1); lz1.append(z1);
+            lx2.append(x2); ly2.append(y2); lz2.append(z2);
+            lvx1.append(vx1); lvy1.append(vy1); lvz1.append(vz1);
+            lvx2.append(vx2); lvy2.append(vy2); lvz2.append(vz2);
+            N += 1
+            mean_height = mean_height * (N-1)/N + np.linalg.norm(np.array((x1,y1,z1))*1e-3)/N
+            mean_velo = mean_velo * (N-1)/N + np.linalg.norm(np.array((vx1,vy1,vz1)))/N
+            #except:
+            #    pass
         else:
             if line.startswith('#title'):
                 title = line.replace('#title','').strip()
     return t, lx1, ly1, lz1, lvx1, lvy1, lvz1, lx2, ly2, lz2, lvx2, lvy2, lvz2, mean_height, mean_velo
+
+def match(t1, x1, t2, x2, matched_indexes = None):
+    dt = []; dx = []
+    if matched_indexes is None:
+        midx = []
+        for i, t in enumerate(t1):
+            try:
+                j = t2.index(t)
+                dt.append(t)
+                dx.append(x1[i] - x2[j])
+                midx.append( (i,j) )
+            except: 
+                pass
+    else:
+        midx = matched_indexes
+        for idx in matched_indexes:
+            i,j=idx[0],idx[1]
+            dt.append(t1[i])
+            dx.append(x1[i] - x2[j])
+    return dt, dx, midx
 
 if __name__ == "__main__":
     args = parser.parse_args()
@@ -137,9 +158,11 @@ if __name__ == "__main__":
     # read from file or stdin
     if args.from_file is not None:
         with open(args.from_file, 'r') as f:
+            print(f'Reading input from file {args.from_file}')
             t, lx1, ly1, lz1, lvx1, lvy1, lvz1, lx2, ly2, lz2, lvx2, lvy2, lvz2, mean_height, mean_velo = parse(f, args.xaxh)
     else:
         t, lx1, ly1, lz1, lvx1, lvy1, lvz1, lx2, ly2, lz2, lvx2, lvy2, lvz2, mean_height, mean_velo = parse(sys.stdin, args.xaxh)
+    print(f'Number of data lines read: {len(t)}')
 
     ## do nothing on empty input
     if len(t) <= 1: sys.exit(1)
@@ -150,7 +173,10 @@ if __name__ == "__main__":
 
 ## Plot results compared to another file
     if args.compare_to is not None:
-        st, slx1, sly1, slz1, slvx1, slvy1, slvz1, slx2, sly2, slz2, slvx2, slvy2, slvz2, _, _ = parse(args.compare_to, args.xaxh)
+        with open(args.compare_to, 'r') as f:
+            print(f'Reading (secondary) input from file {args.compare_to}')
+            st, slx1, sly1, slz1, slvx1, slvy1, slvz1, slx2, sly2, slz2, slvx2, slvy2, slvz2, _, _ = parse(f, args.xaxh)
+        print(f'Number of data lines read: {len(st)}')
         axs[0,0].plot(t, [scale_pos*(z[0]-z[1]) for z in zip(lx1,lx2)]  ,label=r'$\delta x$ current')
         axs[1,0].plot(t, [scale_pos*(z[0]-z[1]) for z in zip(ly1,ly2)]  ,label=r'$\delta y$ current')
         axs[2,0].plot(t, [scale_pos*(z[0]-z[1]) for z in zip(lz1,lz2)]  ,label=r'$\delta z$ current')
@@ -164,6 +190,14 @@ if __name__ == "__main__":
         axs[0,1].plot(st, [scale_vel*(z[0]-z[1]) for z in zip(slvx1,slvx2)],label=r'$\delta v_x$ {:}'.format(args.compare_to))
         axs[1,1].plot(st, [scale_vel*(z[0]-z[1]) for z in zip(slvy1,slvy2)],label=r'$\delta v_y$ {:}'.format(args.compare_to))
         axs[2,1].plot(st, [scale_vel*(z[0]-z[1]) for z in zip(slvz1,slvz2)],label=r'$\delta v_z$ {:}'.format(args.compare_to))
+        
+        dt, dx, midx = match(st, slx1, t, lx1, None)
+        axs[0,0].plot(dt, [scale_pos*(z) for z in match(st,slx2, t,lx2 ,midx)[1]],label="_nolegend_")
+        axs[1,0].plot(dt, [scale_pos*(z) for z in match(st,sly2, t,ly2 ,midx)[1]],label="_nolegend_")
+        axs[2,0].plot(dt, [scale_pos*(z) for z in match(st,slz2, t,lz2 ,midx)[1]],label="_nolegend_")
+        axs[0,1].plot(dt, [scale_vel*(z) for z in match(st,slvx2,t,lvx2,midx)[1]],label="_nolegend_")
+        axs[1,1].plot(dt, [scale_vel*(z) for z in match(st,slvy2,t,lvy2,midx)[1]],label="_nolegend_")
+        axs[2,1].plot(dt, [scale_vel*(z) for z in match(st,slvz2,t,lvz2,midx)[1]],label="_nolegend_")
         
         axs[0,0].legend(loc='upper left')
         axs[1,0].legend(loc='upper left')
