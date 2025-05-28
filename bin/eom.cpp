@@ -265,28 +265,40 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
       ac += dso::iers2010_relativistic_acceleration(y0, rsun);
     }
 
-    /* Solar Radiation Pressure */
-    if (params->matt) {
+    if (params->mCr) {
       const double of =
-          dso::conical_occultation(y0.segment<3>(0), rsun.segment<3>(0));
+          /* dso::conical_occultation(y0.segment<3>(0), rsun.segment<3>(0)); */
+          dso::conical_occultation(y0.segment<3>(0), rsun.segment<3>(0), Eigen::Matrix<double,3,1>::Zero(), ::iers2010::Re) * 
+          dso::conical_occultation(y0.segment<3>(0), rsun.segment<3>(0), rmoon, 1737e3);
+      
       if (of > 0e0) {
-        /* get attitude */
-        if (params->matt->attitude_at(tt, *(params->mattdata))) {
-          fprintf(stderr, "[ERROR] Failed getting attitude!\n");
+        /* Solar Radiation Pressure */
+        if (params->matt) {
+          /* get attitude */
+          if (params->matt->attitude_at(tt, *(params->mattdata))) {
+            fprintf(stderr, "[ERROR] Failed getting attitude!\n");
 #ifdef USE_BOOST
-          throw std::runtime_error(
-              "ERROR. Failed computing derivative [attitude]\n");
+            throw std::runtime_error(
+                "ERROR. Failed computing derivative [attitude]\n");
 #else
-        return 200;
+          return 200;
 #endif
+          }
+          /* we may need (depending on satellite) the satellite-to-sun vector */
+          Eigen::Vector3d sat2sun = -y0.segment<3>(0)+rsun.segment<3>(0);
+          /* compute SRP acceleration */
+          ac += (params->mCr * of) *
+                dso::solar_radiation_pressure(
+                    params->msatmm->rotate_macromodel(
+                        params->mattdata->quaternions(),
+                        params->mattdata->angles(), &sat2sun),
+                    y0.segment<3>(0), rsun.segment<3>(0), params->msatmm->satellite_mass());
+        } else {
+          ac += (params->mCr * of) *
+                dso::solar_radiation_pressure(
+                    params->msatmm->srp_cannoball_area(), y0.segment<3>(0),
+                    rsun.segment<3>(0), params->msatmm->satellite_mass());
         }
-        /* compute SRP acceleration */
-        ac +=
-            (of / params->msatmm->satellite_mass()) *
-            dso::solar_radiation_pressure(params->msatmm->rotate_macromodel(
-                                              params->mattdata->quaternions(),
-                                              params->mattdata->angles()),
-                                          y0.segment<3>(0), rsun.segment<3>(0));
       }
     }
 
@@ -454,7 +466,7 @@ int main(int argc, char *argv[]) {
     }
 
     ++it;
-    if (it > 400)
+    if (it > 600)
       break;
   }
 

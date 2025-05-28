@@ -40,6 +40,8 @@ namespace dso
     dso::attitude_details::MeasuredAttitudeData *mattdata{nullptr};
     /* satellite Macromodel */
     dso::SatelliteMacromodel *msatmm{nullptr};
+    /* dynamic parameter for SRP, i.e. Cr */
+    double mCr;
 
     /* third body gravity
      *                       | Bit Nr. | Default state

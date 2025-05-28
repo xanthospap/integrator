@@ -76,6 +76,6 @@ atmospheric-tide:
 
 satellite-attitude:
   satellite: ja3
+  cnes_sat_file: data/ja3mass.txt
   # data_file:
   data_file: data/qua_ja3.csv
-  cnes_sat_file: data/ja3mass.txt

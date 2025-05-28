@@ -3,7 +3,7 @@
 set(BIN_SOURCES
   test_deriv_costg.cpp
   eom.cpp
-  stm.cpp
+  #stm.cpp
 )
 
 # Process each source file and create an executable

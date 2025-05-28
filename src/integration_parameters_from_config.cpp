@@ -230,30 +230,56 @@ dso::IntegrationParameters::from_config(const char *fn,
   }
   params.mdealias = dap;
 
+  /* get the satellite (mandatory) */
+  dso::SATELLITE sat(dso::SATELLITE::UNKNOWN);
+  if (is_nonempty_string(config["satellite-attitude"]["satellite"])) {
+    const auto s = config["satellite-attitude"]["satellite"].as<std::string>();
+    try {
+      sat = dso::translate_satid(s.c_str());
+    } catch (std::exception &e) {
+      fprintf(stderr, e.what());
+      std::string err_msg = "[ERROR] Failed to translate satellite name "
+                            "from "
+                            "config parameters " +
+                            s + " (traceback:" + std::string(__func__) + ")\n";
+      throw std::runtime_error(err_msg);
+    }
+  }
+
   /* Satellite attitude (if model satellite-attitude::data_file is non-empty) */
   dso::SatelliteAttitude *satat = nullptr;
-  dso::SatelliteMacromodel *satmm = nullptr;
   dso::attitude_details::MeasuredAttitudeData *mad = nullptr;
   if (is_nonempty_string(config["satellite-attitude"]["data_file"])) {
     const auto d = config["satellite-attitude"]["data_file"].as<std::string>();
-    const auto s = config["satellite-attitude"]["satellite"].as<std::string>();
     try {
-      const dso::SATELLITE sat = dso::translate_satid(s.c_str());
       satat = new dso::MeasuredAttitude(sat, d.c_str());
       mad = new dso::attitude_details::MeasuredAttitudeData(
           dso::measured_attitude_data_factory(sat));
-      satmm = new dso::SatelliteMacromodel(
-          dso::SatelliteMacromodel::createSatelliteMacromodel(sat));
     } catch (std::exception &e) {
       fprintf(stderr, e.what());
       std::string err_msg = "[ERROR] Failed to construct a SatelliteAttitude "
-                            "and/or SatelliteMacromodel instance from "
+                            "and/or MeasuredAttitudeData instance from "
                             "config parameters " +
-                            s + ", " + d +
+                            d +
                             " (traceback:" + std::string(__func__) + ")\n";
       throw std::runtime_error(err_msg);
     }
+  }
+  params.matt = satat;   // attitude
+  params.mattdata = mad; // attitude data (for retrieving attitude from stream)
 
+  /* create the macromodel (independent of attitude) */
+  dso::SatelliteMacromodel *satmm = nullptr;
+  {
+  try {
+    satmm = new dso::SatelliteMacromodel(
+        dso::SatelliteMacromodel::createSatelliteMacromodel(sat));
+  } catch (std::exception &e) {
+    fprintf(stderr, e.what());
+    std::string err_msg = "[ERROR] Failed to construct a SatelliteMacromodel"
+                          " instance from config parameters (traceback:" + std::string(__func__) + ")\n";
+    throw std::runtime_error(err_msg);
+  }
     if (is_nonempty_string(config["satellite-attitude"]["cnes_sat_file"])) {
       const auto c =
           config["satellite-attitude"]["cnes_sat_file"].as<std::string>();
@@ -265,9 +291,12 @@ dso::IntegrationParameters::from_config(const char *fn,
       }
     }
   }
-  params.matt = satat;
-  params.mattdata = mad;
-  params.msatmm = satmm;
+  params.msatmm = satmm; // macromodel (maybe used or not depending on attitude)
+  
+  /* Dynamic parameters */
+  {
+  params.mCr = config["dynamic-parameters"]["Cr"].as<double>();
+  }
 
   /* return */
   return params;
