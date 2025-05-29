@@ -100,6 +100,7 @@ defaultPlotOptions = {
     "error_bar_alpha": 0.2,
 }
 
+
 def parse(source, sec2hr=False):
     t = []; lx1=[]; ly1=[]; lz1=[];
     lx2=[]; ly2=[]; lz2=[];
@@ -154,6 +155,7 @@ if __name__ == "__main__":
     scale_vel = args.scale_vel
 
     plotOptions = defaultPlotOptions
+    primary_input = 'stdin' if not args.from_file else args.from_file
 
     # read from file or stdin
     if args.from_file is not None:
@@ -206,6 +208,21 @@ if __name__ == "__main__":
         axs[1,1].legend(loc='upper left')
         axs[2,1].legend(loc='upper left')
 
+# Stats
+        print(f'{primary_input:25s} {args.compare_to:16s}')
+        print(f'X : {np.average([(z[0]-z[1]) for z in zip(lx1,lx2)]):+.4f} +- {np.std([(z[0]-z[1]) for z in zip(lx1,lx2)]):.4f} [m]', end='')
+        print(f'      {np.average([(z[0]-z[1]) for z in zip(slx1,slx2)]):+.4f} +- {np.std([(z[0]-z[1]) for z in zip(slx1,slx2)]):.4f} [m]')
+        print(f'Y : {np.average([(z[0]-z[1]) for z in zip(ly1,ly2)]):+.4f} +- {np.std([(z[0]-z[1]) for z in zip(ly1,ly2)]):.4f} [m]', end='')
+        print(f'      {np.average([(z[0]-z[1]) for z in zip(sly1,sly2)]):+.4f} +- {np.std([(z[0]-z[1]) for z in zip(sly1,sly2)]):.4f} [m]')
+        print(f'Z : {np.average([(z[0]-z[1]) for z in zip(lz1,lz2)]):+.4f} +- {np.std([(z[0]-z[1]) for z in zip(lz1,lz2)]):.4f} [m]', end='')
+        print(f'      {np.average([(z[0]-z[1]) for z in zip(slz1,slz2)]):+.4f} +- {np.std([(z[0]-z[1]) for z in zip(slz1,slz2)]):.4f} [m]')
+        print(f'Vx: {np.average([(z[0]-z[1]) for z in zip(lvx1,lvx2)])*1e3:+.4f} +- {np.std([(z[0]-z[1]) for z in zip(lvx1,lvx2)])*1e3:.4f} [mm/sec]', end='')
+        print(f' {np.average([(z[0]-z[1]) for z in zip(slvx1,slvx2)])*1e3:+.4f} +- {np.std([(z[0]-z[1]) for z in zip(slvx1,slvx2)])*1e3:.4f} [mm/sec]')
+        print(f'Vy: {np.average([(z[0]-z[1]) for z in zip(lvy1,lvy2)])*1e3:+.4f} +- {np.std([(z[0]-z[1]) for z in zip(lvy1,lvy2)])*1e3:.4f} [mm/sec]', end='')
+        print(f' {np.average([(z[0]-z[1]) for z in zip(slvy1,slvy2)])*1e3:+.4f} +- {np.std([(z[0]-z[1]) for z in zip(slvy1,slvy2)])*1e3:.4f} [mm/sec]')
+        print(f'Vz: {np.average([(z[0]-z[1]) for z in zip(lvz1,lvz2)])*1e3:+.4f} +- {np.std([(z[0]-z[1]) for z in zip(lvz1,lvz2)])*1e3:.4f} [mm/sec]', end='')
+        print(f' {np.average([(z[0]-z[1]) for z in zip(slvz1,slvz2)])*1e3:+.4f} +- {np.std([(z[0]-z[1]) for z in zip(slvz1,slvz2)])*1e3:.4f} [mm/sec]')
+
 ## Plot state results (not differences)
     if (args.nodif or args.withdif) and not args.compare_to:
         print("Plotting state results ...")
@@ -246,7 +263,15 @@ if __name__ == "__main__":
         # Add invisible axes for left and right column labels
         fig.text(0.04, 0.5, '[m]', va='center', rotation='vertical')
         fig.text(0.96, 0.5, '[mm/sec]', va='center', rotation='vertical')
-        
+
+# Stats
+        print(f'X : {np.average([(z[0]-z[1]) for z in zip(lx1,lx2)]):+.4f} +- {np.std([(z[0]-z[1]) for z in zip(lx1,lx2)]):.4f} [m]')
+        print(f'Y : {np.average([(z[0]-z[1]) for z in zip(ly1,ly2)]):+.4f} +- {np.std([(z[0]-z[1]) for z in zip(ly1,ly2)]):.4f} [m]')
+        print(f'Z : {np.average([(z[0]-z[1]) for z in zip(lz1,lz2)]):+.4f} +- {np.std([(z[0]-z[1]) for z in zip(lz1,lz2)]):.4f} [m]')
+        print(f'Vx: {np.average([(z[0]-z[1]) for z in zip(lvx1,lvx2)])*1e3:+.4f} +- {np.std([(z[0]-z[1]) for z in zip(lvx1,lvx2)])*1e3:.4f} [mm/sec]')
+        print(f'Vy: {np.average([(z[0]-z[1]) for z in zip(lvy1,lvy2)])*1e3:+.4f} +- {np.std([(z[0]-z[1]) for z in zip(lvy1,lvy2)])*1e3:.4f} [mm/sec]')
+        print(f'Vz: {np.average([(z[0]-z[1]) for z in zip(lvz1,lvz2)])*1e3:+.4f} +- {np.std([(z[0]-z[1]) for z in zip(lvz1,lvz2)])*1e3:.4f} [mm/sec]')
+
 ## Plot differences per component
     if (args.withdif or (not args.nodif)) and not args.compare_to:
         print("Plotting state diffs ...")
@@ -270,6 +295,14 @@ if __name__ == "__main__":
         axs[0,1].text(.01,.99,r'$V_{X_{ref}}-V_{X}$',transform=axs[0,1].transAxes,verticalalignment='top', horizontalalignment='left',fontsize=10,clip_on=True)
         axs[1,1].text(.01,.99,r'$V_{Y_{ref}}-V_{Y}$',transform=axs[1,1].transAxes,verticalalignment='top', horizontalalignment='left',fontsize=10,clip_on=True)
         axs[2,1].text(.01,.99,r'$V_{Z_{ref}}-V_{Z}$',transform=axs[2,1].transAxes,verticalalignment='top', horizontalalignment='left',fontsize=10,clip_on=True)
+
+# Stats
+        print(f'X : {np.average([(z[0]-z[1]) for z in zip(lx1,lx2)]):+.4f} +- {np.std([(z[0]-z[1]) for z in zip(lx1,lx2)]):.4f} [m]')
+        print(f'Y : {np.average([(z[0]-z[1]) for z in zip(ly1,ly2)]):+.4f} +- {np.std([(z[0]-z[1]) for z in zip(ly1,ly2)]):.4f} [m]')
+        print(f'Z : {np.average([(z[0]-z[1]) for z in zip(lz1,lz2)]):+.4f} +- {np.std([(z[0]-z[1]) for z in zip(lz1,lz2)]):.4f} [m]')
+        print(f'Vx: {np.average([(z[0]-z[1]) for z in zip(lvx1,lvx2)])*1e3:+.4f} +- {np.std([(z[0]-z[1]) for z in zip(lvx1,lvx2)])*1e3:.4f} [mm/sec]')
+        print(f'Vy: {np.average([(z[0]-z[1]) for z in zip(lvy1,lvy2)])*1e3:+.4f} +- {np.std([(z[0]-z[1]) for z in zip(lvy1,lvy2)])*1e3:.4f} [mm/sec]')
+        print(f'Vz: {np.average([(z[0]-z[1]) for z in zip(lvz1,lvz2)])*1e3:+.4f} +- {np.std([(z[0]-z[1]) for z in zip(lvz1,lvz2)])*1e3:.4f} [mm/sec]')
 
         # Add invisible axes for left and right column labels
         fig.text(0.04, 0.5, '[m]', va='center', rotation='vertical')
