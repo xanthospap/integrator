@@ -285,7 +285,7 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
 #endif
           }
           /* we may need (depending on satellite) the satellite-to-sun vector */
-          Eigen::Vector3d sat2sun = -y0.segment<3>(0)+rsun.segment<3>(0);
+          Eigen::Vector3d sat2sun =  rsun.segment<3>(0) - y0.segment<3>(0);
           /* compute SRP acceleration */
           ac += (params->mCr * of) *
                 dso::solar_radiation_pressure(
