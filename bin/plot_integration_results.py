@@ -83,6 +83,12 @@ parser.add_argument(
     dest='xaxh',
     help='Make x-axis hours instead of seconds.')
 
+parser.add_argument(
+    '--ntw',
+    action='store_true',
+    dest='ntw',
+    help='Plot differences in NTW instead of ECEF')
+
 defaultPlotOptions = {
     "style_sheet": "dark_background",
     "data_points_color": "blue",
@@ -100,6 +106,23 @@ defaultPlotOptions = {
     "error_bar_alpha": 0.2,
 }
 
+def cel2ntw(r, v):
+    r = np.array(r)
+    v = np.array(v)
+    T = v / np.linalg.norm(v)
+    W = np.cross(r, v) / np.linalg.norm(np.cross(r, v))
+    N = np.cross(T, W)
+    R = np.column_stack((N, T, W))
+    return R.transpose()
+
+def ntwdiff(t, x1, y1, z1, vx1, vy1, vz1, x2, y2, z2):
+    ntws = []
+    for i, t in enumerate(t):
+        R = cel2ntw(np.array([x1[i], y1[i], z1[i]]), np.array([vx1[i], vy1[i], vz1[i]]))
+        dr = np.array([x1[i]-x2[i], y1[i]-y2[i], z1[i]-z2[i]])
+        ntw = R * dr
+        ntws.append(ntw)
+    return ntws
 
 def parse(source, sec2hr=False):
     t = []; lx1=[]; ly1=[]; lz1=[];
@@ -112,18 +135,18 @@ def parse(source, sec2hr=False):
     for line in source:
         # print(line.strip())
         if line[0] != '#' and (not 'Number of deriv calls' in line):
-            #try:
-            sec, x1, y1, z1, vx1, vy1, vz1, x2, y2, z2, vx2, vy2, vz2 = [ float(x) for x in line.split(' ') ]
-            t.append(sec if sec2hr is False else sec/3600.)
-            lx1.append(x1); ly1.append(y1); lz1.append(z1);
-            lx2.append(x2); ly2.append(y2); lz2.append(z2);
-            lvx1.append(vx1); lvy1.append(vy1); lvz1.append(vz1);
-            lvx2.append(vx2); lvy2.append(vy2); lvz2.append(vz2);
-            N += 1
-            mean_height = mean_height * (N-1)/N + np.linalg.norm(np.array((x1,y1,z1))*1e-3)/N
-            mean_velo = mean_velo * (N-1)/N + np.linalg.norm(np.array((vx1,vy1,vz1)))/N
-            #except:
-            #    pass
+            try:
+                sec, x1, y1, z1, vx1, vy1, vz1, x2, y2, z2, vx2, vy2, vz2 = [ float(x) for x in line.split(' ') ]
+                t.append(sec if sec2hr is False else sec/3600.)
+                lx1.append(x1); ly1.append(y1); lz1.append(z1);
+                lx2.append(x2); ly2.append(y2); lz2.append(z2);
+                lvx1.append(vx1); lvy1.append(vy1); lvz1.append(vz1);
+                lvx2.append(vx2); lvy2.append(vy2); lvz2.append(vz2);
+                N += 1
+                mean_height = mean_height * (N-1)/N + np.linalg.norm(np.array((x1,y1,z1))*1e-3)/N
+                mean_velo = mean_velo * (N-1)/N + np.linalg.norm(np.array((vx1,vy1,vz1)))/N
+            except:
+                pass
         else:
             if line.startswith('#title'):
                 title = line.replace('#title','').strip()
@@ -192,11 +215,27 @@ if __name__ == "__main__":
         axs[0,1].plot(st, [scale_vel*(z[0]-z[1]) for z in zip(slvx1,slvx2)],label=r'$\delta v_x$ {:}'.format(args.compare_to))
         axs[1,1].plot(st, [scale_vel*(z[0]-z[1]) for z in zip(slvy1,slvy2)],label=r'$\delta v_y$ {:}'.format(args.compare_to))
         axs[2,1].plot(st, [scale_vel*(z[0]-z[1]) for z in zip(slvz1,slvz2)],label=r'$\delta v_z$ {:}'.format(args.compare_to))
-        
-        dt, dx, midx = match(st, slx1, t, lx1, None)
-        axs[0,0].plot(dt, [scale_pos*(z) for z in match(st,slx2, t,lx2 ,midx)[1]],label="_nolegend_")
-        axs[1,0].plot(dt, [scale_pos*(z) for z in match(st,sly2, t,ly2 ,midx)[1]],label="_nolegend_")
-        axs[2,0].plot(dt, [scale_pos*(z) for z in match(st,slz2, t,lz2 ,midx)[1]],label="_nolegend_")
+
+        if not args.ntw:     
+            dt, dx, midx = match(st, slx1, t, lx1, None)
+            axs[0,0].plot(dt, [scale_pos*(z) for z in match(st,slx2, t,lx2 ,midx)[1]],label="_nolegend_")
+            axs[1,0].plot(dt, [scale_pos*(z) for z in match(st,sly2, t,ly2 ,midx)[1]],label="_nolegend_")
+            axs[2,0].plot(dt, [scale_pos*(z) for z in match(st,slz2, t,lz2 ,midx)[1]],label="_nolegend_")
+        else:
+            dt, dx, midx = match(st, slx1, t, lx1, None)
+            tx1 =  [lx2[i[0]] for i in midx]
+            ty1 =  [ly2[i[0]] for i in midx]
+            tz1 =  [lz2[i[0]] for i in midx]
+            tvx1 = [lvx2[i[0]] for i in midx]
+            tvy1 = [lvy2[i[0]] for i in midx]
+            tvz1 = [lvz2[i[0]] for i in midx]
+            tx2 =  [slx2[i[1]] for i in midx]
+            ty2 =  [sly2[i[1]] for i in midx]
+            tz2 =  [slz2[i[1]] for i in midx]
+            ntwd = ntwdiff(dt, tx1, ty1, tz1, tvx1, tvy1, tvz1, tx2, ty2, tz2)
+            axs[0,0].plot(dt, [scale_pos*(z[0]) for z in ntwd],label="_nolegend_")
+            axs[1,0].plot(dt, [scale_pos*(z[1]) for z in ntwd],label="_nolegend_")
+            axs[2,0].plot(dt, [scale_pos*(z[2]) for z in ntwd],label="_nolegend_")
         axs[0,1].plot(dt, [scale_vel*(z) for z in match(st,slvx2,t,lvx2,midx)[1]],label="_nolegend_")
         axs[1,1].plot(dt, [scale_vel*(z) for z in match(st,slvy2,t,lvy2,midx)[1]],label="_nolegend_")
         axs[2,1].plot(dt, [scale_vel*(z) for z in match(st,slvz2,t,lvz2,midx)[1]],label="_nolegend_")

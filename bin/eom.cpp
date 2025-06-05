@@ -287,12 +287,15 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
           /* we may need (depending on satellite) the satellite-to-sun vector */
           Eigen::Vector3d sat2sun =  rsun.segment<3>(0) - y0.segment<3>(0);
           /* compute SRP acceleration */
-          ac += (params->mCr * of) *
+          const Eigen::Vector3d tmp = 
+          /*ac +=*/ (params->mCr * of) *
                 dso::solar_radiation_pressure(
                     params->msatmm->rotate_macromodel(
                         params->mattdata->quaternions(),
                         params->mattdata->angles(), &sat2sun),
                     y0.segment<3>(0), rsun.segment<3>(0), params->msatmm->satellite_mass());
+          // printf("%.12f %.15f %.15f %.15f\n", tt.as_mjd(), tmp(0), tmp(1), tmp(2));
+          ac += tmp;
         } else {
           ac += (params->mCr * of) *
                 dso::solar_radiation_pressure(
