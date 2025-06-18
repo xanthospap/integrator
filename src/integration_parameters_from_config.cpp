@@ -260,8 +260,7 @@ dso::IntegrationParameters::from_config(const char *fn,
       std::string err_msg = "[ERROR] Failed to construct a SatelliteAttitude "
                             "and/or MeasuredAttitudeData instance from "
                             "config parameters " +
-                            d +
-                            " (traceback:" + std::string(__func__) + ")\n";
+                            d + " (traceback:" + std::string(__func__) + ")\n";
       throw std::runtime_error(err_msg);
     }
   }
@@ -271,15 +270,16 @@ dso::IntegrationParameters::from_config(const char *fn,
   /* create the macromodel (independent of attitude) */
   dso::SatelliteMacromodel *satmm = nullptr;
   {
-  try {
-    satmm = new dso::SatelliteMacromodel(
-        dso::SatelliteMacromodel::createSatelliteMacromodel(sat));
-  } catch (std::exception &e) {
-    fprintf(stderr, e.what());
-    std::string err_msg = "[ERROR] Failed to construct a SatelliteMacromodel"
-                          " instance from config parameters (traceback:" + std::string(__func__) + ")\n";
-    throw std::runtime_error(err_msg);
-  }
+    try {
+      satmm = new dso::SatelliteMacromodel(
+          dso::SatelliteMacromodel::createSatelliteMacromodel(sat));
+    } catch (std::exception &e) {
+      fprintf(stderr, e.what());
+      std::string err_msg = "[ERROR] Failed to construct a SatelliteMacromodel"
+                            " instance from config parameters (traceback:" +
+                            std::string(__func__) + ")\n";
+      throw std::runtime_error(err_msg);
+    }
     if (is_nonempty_string(config["satellite-attitude"]["cnes_sat_file"])) {
       const auto c =
           config["satellite-attitude"]["cnes_sat_file"].as<std::string>();
@@ -292,10 +292,37 @@ dso::IntegrationParameters::from_config(const char *fn,
     }
   }
   params.msatmm = satmm; // macromodel (maybe used or not depending on attitude)
-  
+
+  /* atmospheric density */
+  {
+    if (is_nonempty_string(config["atmospheric-density-model"]["model"])) {
+      if (is_nonempty_string(config["space-weather-data"]["celestrak_csv"])) {
+        const auto swd =
+            config["space-weather-data"]["celestrak_csv"].as<std::string>();
+        const auto t1 =
+            tt_start.add_seconds(dso::FractionalSeconds(-5 * 86400));
+        const auto t2 = tt_stop.add_seconds(dso::FractionalSeconds(5 * 86400));
+        std::vector<dso::SpaceWeatherData> *tswdata =
+            new std::vector<dso::SpaceWeatherData>();
+        *tswdata = dso::load_celestrak_sw(swd.c_str(), t1, t2);
+        params.mspwdata = tswdata;
+
+        params.matmdens = new dso::Nrlmsise00;
+        params.matmdens->setup_data_hunter(*(params.mspwdata));
+      } else {
+        std::string err_msg = "[ERROR] Need Space Weather data to compute "
+                              "atmospheric density; field is empty!"
+                              " (traceback:" +
+                              std::string(__func__) + ")\n";
+        throw std::runtime_error(err_msg);
+      }
+    }
+  }
+
   /* Dynamic parameters */
   {
-  params.mCr = config["dynamic-parameters"]["Cr"].as<double>();
+    params.mCr = config["dynamic-parameters"]["Cr"].as<double>();
+    params.mCd = config["dynamic-parameters"]["Cd"].as<double>();
   }
 
   /* return */
