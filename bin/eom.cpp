@@ -1,4 +1,5 @@
 #include "dop853.hpp"
+#include "geodesy/transformations.hpp"
 #include "geodesy/units.hpp"
 #include "iers/earth_rotation.hpp"
 #include "iers/fundarg.hpp"
@@ -14,20 +15,10 @@
 #include "yaml-cpp/yaml.h"
 #include <cassert>
 #include <cstdio>
-#ifdef USE_BOOST
-#include <boost/numeric/odeint.hpp>
-#include <stdexcept>
-#endif
 
 constexpr const double GM_Moon = /*0.49028010560e13;*/ 4902.800076e9;
 constexpr const double GM_Sun = /*1.32712442076e20;*/ 132712440040.944e9;
 constexpr const double EVERY_SEC = 180e0;
-
-#ifdef USE_BOOST
-/* Define the State Type for ODEINT */
-typedef std::array<double, 6> state_type;
-typedef boost::numeric::odeint::runge_kutta_dopri5<state_type> dopri5_type;
-#endif
 
 /* Compute relevant quaternions for the ITRS/GCRS transformation
  */
@@ -108,171 +99,167 @@ int prep_c2i(const dso::MjdEpoch &tai, dso::EopSeries &eops,
   return 0;
 }
 
-#ifdef USE_BOOST
-struct EomSystem {
-  dso::IntegrationParameters *params;
-  EomSystem(dso::IntegrationParameters *p) noexcept : params(p) {}
-
-  void operator()(const state_type &x, state_type &dxdt, double tsec) {
-    Eigen::Matrix<double, 6, 1> y0;
-    for (int i = 0; i < 6; i++)
-      y0(i) = x[i];
-#else
 int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
           dso::IntegrationParameters *params,
           Eigen::Ref<Eigen::VectorXd> yp) noexcept {
-#endif
-    /* epoch of request in TT */
-    const auto tt =
-        (params->t0().add_seconds(dso::FractionalSeconds(tsec))).tai2tt();
+  /* epoch of request in TT */
+  const auto tt =
+      (params->t0().add_seconds(dso::FractionalSeconds(tsec))).tai2tt();
 
-    /* GCRS/ITRS at t */
-    double fargs[14];
-    dso::EopRecord eopr;
-    Eigen::Quaterniond q_c2tirs, q_tirs2i;
-    prep_c2i(tt.tt2tai(), params->eops(), q_c2tirs, q_tirs2i, fargs, eopr);
-    Eigen::Vector3d omega;
-    omega << 0e0, 0e0, dso::earth_rotation_rate(eopr.lod());
+  /* GCRS/ITRS at t */
+  double fargs[14];
+  dso::EopRecord eopr;
+  Eigen::Quaterniond q_c2tirs, q_tirs2i;
+  prep_c2i(tt.tt2tai(), params->eops(), q_c2tirs, q_tirs2i, fargs, eopr);
+  Eigen::Vector3d omega;
+  omega << 0e0, 0e0, dso::earth_rotation_rate(eopr.lod());
 
-    /* get Sun position & velocity in ICRF */
-    Eigen::Matrix<double, 6, 1> rsun;
-    if (dso::planet_state(dso::Planet::SUN, tt, rsun)) {
-      fprintf(stderr, "ERROR Failed to compute Sun position!\n");
-#ifdef USE_BOOST
-      throw std::runtime_error(
-          "ERROR. Failed computing derivative [Sun position]\n");
-#else
+  /* get Sun position & velocity in ICRF */
+  Eigen::Matrix<double, 6, 1> rsun;
+  if (dso::planet_state(dso::Planet::SUN, tt, rsun)) {
+    fprintf(stderr, "ERROR Failed to compute Sun position!\n");
     return 100;
-#endif
-    }
+  }
 
-    /* get Moon position in ICRF */
-    Eigen::Matrix<double, 3, 1> rmoon;
-    if (dso::planet_pos(dso::Planet::MOON, tt, rmoon)) {
-      fprintf(stderr, "ERROR Failed to compute Moon position!\n");
-#ifdef USE_BOOST
-      throw std::runtime_error(
-          "ERROR. Failed computing derivative [Moon position]\n");
-#else
+  /* get Moon position in ICRF */
+  Eigen::Matrix<double, 3, 1> rmoon;
+  if (dso::planet_pos(dso::Planet::MOON, tt, rmoon)) {
+    fprintf(stderr, "ERROR Failed to compute Moon position!\n");
     return 101;
-#endif
-    }
+  }
 
-    /* state in ITRS (from GCRS) */
-    Eigen::Matrix<double, 6, 1> itrs = Eigen::Matrix<double, 6, 1>::Zero();
-    itrs.segment<3>(0) = q_tirs2i * (q_c2tirs * y0.segment<3>(0));
-    itrs.segment<3>(3) = q_tirs2i * (q_c2tirs * y0.segment<3>(3) -
-                                     omega.cross(q_c2tirs * y0.segment<3>(0)));
+  /* state in ITRS (from GCRS) */
+  Eigen::Matrix<double, 6, 1> itrs = Eigen::Matrix<double, 6, 1>::Zero();
+  itrs.segment<3>(0) = q_tirs2i * (q_c2tirs * y0.segment<3>(0));
+  itrs.segment<3>(3) = q_tirs2i * (q_c2tirs * y0.segment<3>(3) -
+                                   omega.cross(q_c2tirs * y0.segment<3>(0)));
 
-    /* accumulated acceleration and gradient in ITRS */
-    Eigen::Vector3d ai = Eigen::Vector3d::Zero();
-    [[maybe_unused]] Eigen::Matrix<double, 3, 3> gi;
-    /* accumulated acceleration in GCRS */
-    Eigen::Vector3d ac = Eigen::Vector3d::Zero();
+  /* accumulated acceleration and gradient in ITRS */
+  Eigen::Vector3d ai = Eigen::Vector3d::Zero();
+  [[maybe_unused]] Eigen::Matrix<double, 3, 3> gi;
+  /* accumulated acceleration in GCRS */
+  Eigen::Vector3d ac = Eigen::Vector3d::Zero();
 
-    /* accumulated SH coeffs
-    TODO!! WARNING!! What if some other SH coeffs (e.g. ocean tide) have (n,m)>
-    gravity(n,m)? write a function as member of IntegrationParameters that
-    return a StokesCoeffs of some degree and order
-    */
-    auto acstokes{params->earth_gravity()};
+  /* accumulated SH coeffs
+  TODO!! WARNING!! What if some other SH coeffs (e.g. ocean tide) have (n,m)>
+  gravity(n,m)? write a function as member of IntegrationParameters that
+  return a StokesCoeffs of some degree and order
+  */
+  auto acstokes{params->earth_gravity()};
 
-    /* add Solid Earth Tides to SH coeffs */
-    if (params->solid_earth_tide()) {
-      params->solid_earth_tide()->stokes_coeffs(
-          tt, tt.tt2ut1(eopr.dut()), q_tirs2i * (q_c2tirs * rmoon),
-          q_tirs2i * (q_c2tirs * rsun.segment<3>(0)), fargs);
-      /* add SET effect */
-      acstokes += params->solid_earth_tide()->stokes_coeffs();
-    }
+  /* add Solid Earth Tides to SH coeffs */
+  if (params->solid_earth_tide()) {
+    params->solid_earth_tide()->stokes_coeffs(
+        tt, tt.tt2ut1(eopr.dut()), q_tirs2i * (q_c2tirs * rmoon),
+        q_tirs2i * (q_c2tirs * rsun.segment<3>(0)), fargs);
+    /* add SET effect */
+    acstokes += params->solid_earth_tide()->stokes_coeffs();
+  }
 
-    /* add Ocean Tides to SH coeffs */
-    if (params->ocean_tide()) {
-      params->ocean_tide()->stokes_coeffs(tt, tt.tt2ut1(eopr.dut()), fargs);
-      acstokes += params->ocean_tide()->stokes_coeffs();
-    }
+  /* add Ocean Tides to SH coeffs */
+  if (params->ocean_tide()) {
+    params->ocean_tide()->stokes_coeffs(tt, tt.tt2ut1(eopr.dut()), fargs);
+    acstokes += params->ocean_tide()->stokes_coeffs();
+  }
 
-    /* add Pole Tide to SH coeffs */
-    if (params->pole_tide()) {
-      double dC21, dS21;
-      params->pole_tide()->stokes_coeffs(tt, eopr.xp(), eopr.yp(), dC21, dS21);
-      acstokes.C(2, 1) += dC21;
-      acstokes.S(2, 1) += dS21;
-    }
+  /* add Pole Tide to SH coeffs */
+  if (params->pole_tide()) {
+    double dC21, dS21;
+    params->pole_tide()->stokes_coeffs(tt, eopr.xp(), eopr.yp(), dC21, dS21);
+    acstokes.C(2, 1) += dC21;
+    acstokes.S(2, 1) += dS21;
+  }
 
-    /* add Ocean Pole Tide to SH coeffs */
-    if (params->ocean_pole_tide()) {
-      if (params->ocean_pole_tide()->stokes_coeffs(tt, eopr.xp(), eopr.yp())) {
-        fprintf(stderr, "ERROR Failed computing Stokes Coefficients\n");
-#ifdef USE_BOOST
-        throw std::runtime_error(
-            "ERROR. Failed computing derivative [Ocean Pole Tide]\n");
-#else
+  /* add Ocean Pole Tide to SH coeffs */
+  if (params->ocean_pole_tide()) {
+    if (params->ocean_pole_tide()->stokes_coeffs(tt, eopr.xp(), eopr.yp())) {
+      fprintf(stderr, "ERROR Failed computing Stokes Coefficients\n");
       return 102;
-#endif
-      }
-      acstokes += params->ocean_pole_tide()->stokes_coeffs();
     }
+    acstokes += params->ocean_pole_tide()->stokes_coeffs();
+  }
 
-    /* add deAliasing to SH coeffs */
-    if (params->dealias()) {
-      /*
-      TODO!! WARNING!! The dealias instance should have a function that appends
-      the coefficients at a StokesCoeffs instance!
-      */
-      auto tempstokes{params->earth_gravity()};
-      if (params->dealias()->coefficients_at(
-              dso::from_mjdepoch<dso::nanoseconds>(tt), tempstokes)) {
-        fprintf(stderr, "Failed interpolating dealiasing coefficients\n");
-#ifdef USE_BOOST
-        throw std::runtime_error(
-            "ERROR. Failed computing derivative [deAliasing]\n");
-#else
+  /* add deAliasing to SH coeffs */
+  if (params->dealias()) {
+    /*
+    TODO!! WARNING!! The dealias instance should have a function that appends
+    the coefficients at a StokesCoeffs instance!
+    */
+    auto tempstokes{params->earth_gravity()};
+    if (params->dealias()->coefficients_at(
+            dso::from_mjdepoch<dso::nanoseconds>(tt), tempstokes)) {
+      fprintf(stderr, "Failed interpolating dealiasing coefficients\n");
       return 103;
-#endif
-      }
-      acstokes += tempstokes;
     }
+    acstokes += tempstokes;
+  }
 
-    /* add atmospheric tides to SH coeffs */
-    if (params->atmospheric_tide()) {
-      params->atmospheric_tide()->stokes_coeffs(tt, tt.tt2ut1(eopr.dut()),
-                                                fargs);
-      acstokes += params->atmospheric_tide()->stokes_coeffs();
-    }
+  /* add atmospheric tides to SH coeffs */
+  if (params->atmospheric_tide()) {
+    params->atmospheric_tide()->stokes_coeffs(tt, tt.tt2ut1(eopr.dut()), fargs);
+    acstokes += params->atmospheric_tide()->stokes_coeffs();
+  }
 
-    /* acceleration from accumulated SH expansion */
-    if (dso::sh2gradient_cunningham(acstokes,
-                                    // params->earth_gravity(),
-                                    itrs.segment<3>(0), ai, gi,
-                                    params->earth_gravity().max_degree(),
-                                    params->earth_gravity().max_order(), -1, -1,
-                                    &(params->tw()), &(params->tm()))) {
-      fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
-#ifdef USE_BOOST
-      throw std::runtime_error(
-          "ERROR. Failed computing derivative [sh2gradient]\n");
-#else
+  /* acceleration from accumulated SH expansion */
+  if (dso::sh2gradient_cunningham(acstokes,
+                                  // params->earth_gravity(),
+                                  itrs.segment<3>(0), ai, gi,
+                                  params->earth_gravity().max_degree(),
+                                  params->earth_gravity().max_order(), -1, -1,
+                                  &(params->tw()), &(params->tm()))) {
+    fprintf(stderr, "ERROR Failed computing acceleration/gradient\n");
     return 104;
-#endif
-    }
+  }
 
-    /* Third Body perturbations and Relativity (IERS 2010) */
-    {
-      ac += dso::point_mass_acceleration(y0.segment<3>(0), rsun.segment<3>(0),
-                                         GM_Sun);
-      ac += dso::point_mass_acceleration(y0.segment<3>(0), rmoon, GM_Moon);
-      /* Relativistic Correction */
-      ac += dso::iers2010_relativistic_acceleration(y0, rsun);
-    }
+  /* Third Body perturbations and Relativity (IERS 2010) */
+  {
+    ac += dso::point_mass_acceleration(y0.segment<3>(0), rsun.segment<3>(0),
+                                       GM_Sun);
+    ac += dso::point_mass_acceleration(y0.segment<3>(0), rmoon, GM_Moon);
+    /* Relativistic Correction */
+    ac += dso::iers2010_relativistic_acceleration(y0, rsun);
+  }
 
-    /* Atmospheric Drag */
-    if (params->mCd) {
-      /* compute atmospheric density */
-      const double density = params->matmdens->density(itrs.segment<3>(0), tt);
-      /* compute satellite velocity w.r.t atmosphere */
-      const auto vr = y0.segment<3>(3) - omega.cross(y0.segment<3>(0));
-      /* compute atmospheric drag acceleration */
+  /* Atmospheric Drag */
+  if (params->mCd) {
+    /* compute atmospheric density */
+    const double density = params->matmdens->density(itrs.segment<3>(0), tt);
+    /* compute satellite velocity w.r.t atmosphere */
+    const auto vr = y0.segment<3>(3) - omega.cross(y0.segment<3>(0));
+    /* compute atmospheric drag acceleration */
+    if (params->matt) {
+      /* get attitude */
+      if (params->matt->attitude_at(tt, *(params->mattdata))) {
+        fprintf(stderr, "[ERROR] Failed getting attitude!\n");
+      }
+      /* we may need (depending on satellite) the satellite-to-sun vector */
+      Eigen::Vector3d sat2sun = rsun.segment<3>(0) - y0.segment<3>(0);
+      /* compute acceleration */
+      const Eigen::Vector3d tmp =
+          /*ac +=*/(params->mCd) *
+          dso::atmospheric_drag(params->msatmm->rotate_macromodel(
+                                    params->mattdata->quaternions(),
+                                    params->mattdata->angles(), &sat2sun),
+                                vr, density, params->msatmm->satellite_mass());
+      // printf("> drag acc at %.12f=(%.5e %.5e %.5e) rho=%.5e\n",
+      // tt.as_mjd(),
+      //        tmp(0), tmp(1), tmp(2), density);
+      ac += tmp;
+    }
+  }
+
+  /* Solar Radiation Pressure */
+  if (params->mCr) {
+    const double of =
+        /* dso::conical_occultation(y0.segment<3>(0), rsun.segment<3>(0)); */
+        dso::conical_occultation(y0.segment<3>(0), rsun.segment<3>(0),
+                                 Eigen::Matrix<double, 3, 1>::Zero(),
+                                 ::iers2010::Re) *
+        dso::conical_occultation(y0.segment<3>(0), rsun.segment<3>(0), rmoon,
+                                 1737e3);
+
+    if (of > 0e0) {
+      /* Solar Radiation Pressure */
       if (params->matt) {
         /* get attitude */
         if (params->matt->attitude_at(tt, *(params->mattdata))) {
@@ -280,85 +267,33 @@ int deriv(double tsec, Eigen::Ref<const Eigen::VectorXd> y0,
         }
         /* we may need (depending on satellite) the satellite-to-sun vector */
         Eigen::Vector3d sat2sun = rsun.segment<3>(0) - y0.segment<3>(0);
-        /* compute acceleration */
+        /* compute SRP acceleration */
         const Eigen::Vector3d tmp =
-            /*ac +=*/(params->mCd) *
-            dso::atmospheric_drag(params->msatmm->rotate_macromodel(
-                                      params->mattdata->quaternions(),
-                                      params->mattdata->angles(), &sat2sun),
-                                  vr, density,
-                                  params->msatmm->satellite_mass());
-        // printf("> drag acc at %.12f=(%.5e %.5e %.5e) rho=%.5e\n",
-        // tt.as_mjd(),
-        //        tmp(0), tmp(1), tmp(2), density);
+            /*ac +=*/(params->mCr * of) *
+            dso::solar_radiation_pressure(params->msatmm->rotate_macromodel(
+                                              params->mattdata->quaternions(),
+                                              params->mattdata->angles(),
+                                              &sat2sun),
+                                          y0.segment<3>(0), rsun.segment<3>(0),
+                                          params->msatmm->satellite_mass());
+        // printf("> srp  acc at %.12f =(%.15f %.15f %.15f)\n", tt.as_mjd(),
+        //        tmp(0), tmp(1), tmp(2));
         ac += tmp;
+      } else {
+        ac += (params->mCr * of) * dso::solar_radiation_pressure(
+                                       params->msatmm->srp_cannoball_area(),
+                                       y0.segment<3>(0), rsun.segment<3>(0),
+                                       params->msatmm->satellite_mass());
       }
     }
-
-    /* Solar Radiation Pressure */
-    if (params->mCr) {
-      const double of =
-          /* dso::conical_occultation(y0.segment<3>(0), rsun.segment<3>(0)); */
-          dso::conical_occultation(y0.segment<3>(0), rsun.segment<3>(0),
-                                   Eigen::Matrix<double, 3, 1>::Zero(),
-                                   ::iers2010::Re) *
-          dso::conical_occultation(y0.segment<3>(0), rsun.segment<3>(0), rmoon,
-                                   1737e3);
-
-      if (of > 0e0) {
-        /* Solar Radiation Pressure */
-        if (params->matt) {
-          /* get attitude */
-          if (params->matt->attitude_at(tt, *(params->mattdata))) {
-            fprintf(stderr, "[ERROR] Failed getting attitude!\n");
-          }
-          /* we may need (depending on satellite) the satellite-to-sun vector */
-          Eigen::Vector3d sat2sun = rsun.segment<3>(0) - y0.segment<3>(0);
-          /* compute SRP acceleration */
-          const Eigen::Vector3d tmp =
-              /*ac +=*/(params->mCr * of) *
-              dso::solar_radiation_pressure(
-                  params->msatmm->rotate_macromodel(
-                      params->mattdata->quaternions(),
-                      params->mattdata->angles(), &sat2sun),
-                  y0.segment<3>(0), rsun.segment<3>(0),
-                  params->msatmm->satellite_mass());
-          // printf("> srp  acc at %.12f =(%.15f %.15f %.15f)\n", tt.as_mjd(),
-          //        tmp(0), tmp(1), tmp(2));
-          ac += tmp;
-        } else {
-          ac += (params->mCr * of) * dso::solar_radiation_pressure(
-                                         params->msatmm->srp_cannoball_area(),
-                                         y0.segment<3>(0), rsun.segment<3>(0),
-                                         params->msatmm->satellite_mass());
-        }
-      }
-    }
-
-#ifdef USE_BOOST
-    Eigen::Matrix<double, 6, 1> yp = Eigen::Matrix<double, 6, 1>::Zero();
-#endif
-
-    /* form the derivative vector */
-    yp.segment<3>(0) = y0.segment<3>(3);
-    yp.segment<3>(3) = ac + q_c2tirs.conjugate() * (q_tirs2i.conjugate() * ai);
-
-#ifdef USE_BOOST
-    /* form the derivative vector */
-    dxdt[0] = yp(3);
-    dxdt[1] = yp(4);
-    dxdt[2] = yp(5);
-    dxdt[3] = yp(0);
-    dxdt[4] = yp(1);
-    dxdt[5] = yp(2);
-
-    return;
   }
-}; /* struct EomSystem */
-#else
+
+  /* form the derivative vector */
+  yp.segment<3>(0) = y0.segment<3>(3);
+  yp.segment<3>(3) = ac + q_c2tirs.conjugate() * (q_tirs2i.conjugate() * ai);
+
   return 0;
 }
-#endif
 
 int main(int argc, char *argv[]) {
   if (argc < 3) {
@@ -396,13 +331,9 @@ int main(int argc, char *argv[]) {
   double fargs[14];
   dso::EopRecord eopr;
 
-/* integrator */
-#ifdef USE_BOOST
-  auto stepper = make_controlled(1e-8, 1e-8, dopri5_type());
-#else
+  /* integrator */
   dso::Dop853 dop853(deriv, 6, &params, 1e-9, 1e-12);
   dop853.set_stiffness_check(10);
-#endif
 
   Eigen::VectorXd y0 = Eigen::Matrix<double, 6, 1>::Zero();
   Eigen::VectorXd y = Eigen::Matrix<double, 6, 1>::Zero();
@@ -471,18 +402,11 @@ int main(int argc, char *argv[]) {
         }
       }
 
-#ifdef USE_BOOST
-      state_type x = {y0(0), y0(1), y0(2), y0(3), y0(4), y0(5)};
-      boost::numeric::odeint::integrate_adaptive(stepper, EomSystem(&params), x,
-                                                 0e0, sec.seconds(), 1e-3);
-      yc << x[0], x[1], x[2], x[3], x[4], x[5];
-#else
       if (dop853.integrate(0e0, sec.seconds(), y0, yc)) {
         fprintf(stderr, "ERROR. Integration failed! sec is %.3f\n",
                 sec.seconds());
         return 1;
       }
-#endif
 
       /* compare in ITRS */
       Eigen::VectorXd yi = Eigen::Matrix<double, 6, 1>::Zero();
@@ -490,10 +414,27 @@ int main(int argc, char *argv[]) {
       yi.segment<3>(3) = q_tirs2i * (q_c2tirs * yc.segment<3>(3) -
                                      omega.cross(q_c2tirs * yc.segment<3>(0)));
 
+      /* Compare in local, orbital RF */
+      Eigen::Vector3d dr_ntw = Eigen::Matrix<double, 3, 1>::Zero();
+      {
+        // yc: Extrapolated state at t
+        // y : sp3 state at t (ITRS)
+        Eigen::VectorXd yri = Eigen::Matrix<double, 6, 1>::Zero();
+        yri.segment<3>(0) =
+            q_c2tirs.conjugate() * (q_tirs2i.conjugate() * y.segment<3>(0));
+        yri.segment<3>(3) =
+            q_c2tirs.conjugate() *
+            (q_tirs2i.conjugate() * y.segment<3>(3) +
+             omega.cross(q_tirs2i.conjugate() * y.segment<3>(0)));
+        // const auto M = dso::cartesian2ntw(yri.segment<3>(0), yri.segment<3>(3));
+        const auto M = dso::cartesian2rsw(yri.segment<3>(0), yri.segment<3>(3));
+        dr_ntw = M.transpose() * (yri.segment<3>(0)-yc.segment<3>(0));
+      }
+
       printf("%.9f %.3f %.3f %.3f %.6f %.6f %.6f %.3f %.3f %.3f %.6f %.6f "
-             "%.6f\n",
+             "%.6f %.6f %.6f %.6f\n",
              sec.seconds(), y(0), y(1), y(2), y(3), y(4), y(5), yi(0), yi(1),
-             yi(2), yi(3), yi(4), yi(5));
+             yi(2), yi(3), yi(4), yi(5), dr_ntw(0), dr_ntw(1), dr_ntw(2));
 
       tp = tai;
     }
